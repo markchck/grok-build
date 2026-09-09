@@ -22,6 +22,21 @@ import operator
 from typing import Annotated, Any, TypedDict
 
 
+def merge_investigations(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
+    """4-6절(병렬 작업과 결과 통합)에서 쓰는 리듀서.
+
+    같은 슈퍼스텝에서 병렬로 실행되는 여러 investigator 인스턴스가 각자
+    자기 제품 이름을 키로 이 채널에 쓴다. 기본 리듀서(마지막 값이 이긴다)를
+    쓰면 두 병렬 결과 중 하나가 사라진다 — 7단계 ``merge_hits``와 같은 이유로
+    커스텀 리듀서가 필요하다. 여기서는 키가 겹치지 않는 한(제품이 다르므로
+    겹치지 않는다) 단순 dict 병합으로 충분하다.
+    """
+
+    merged = dict(left)
+    merged.update(right)
+    return merged
+
+
 class CollabState(TypedDict):
     # 입력
     request: str  # 사용자 원 요청 (예: "노트북 매출이 왜 늘었는지 조사해줘")
@@ -30,6 +45,10 @@ class CollabState(TypedDict):
     investigation: dict[str, Any]  # investigator가 채운다: 찾은 원본 행 요약
     analysis: dict[str, Any]  # analyst가 채운다: 분기별 비교와 해석
     verification: dict[str, Any]  # verifier가 채운다: 재계산 결과와 판정
+
+    # 4-6절(병렬 investigator) 전용 채널. 제품명 -> 조사 결과. 병렬 실행 시
+    # merge_investigations 리듀서로 병합한다(단일 investigation과는 별개 채널).
+    investigations: Annotated[dict[str, dict[str, Any]], merge_investigations]
 
     shared_notes: Annotated[list[str], operator.add]  # 짧은 진행 메모(사람이 읽기 위한 것)
 
