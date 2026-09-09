@@ -26,7 +26,7 @@ from docagent.config import Settings, get_settings
 def build_chat_model(settings: Settings | None = None, *, temperature: float = 0.2) -> ChatOpenAI:
     """대화형 채팅 모델(LangChain ``BaseChatModel``)을 만든다.
 
-    ``docagent.llm.chat_completion``과 같은 세 값(``base_url``, ``api_key``,
+    ``docagent.llm.chat``과 같은 세 값(``base_url``, ``api_key``,
     ``model``)만 있으면 된다 — 나머지(재시도, 스트리밍, 도구 호출 인코딩)는
     ``langchain_openai``가 openai 파이썬 SDK 위에서 대신 처리한다.
     """
@@ -52,7 +52,7 @@ def build_embeddings(settings: Settings | None = None) -> OpenAIEmbeddings:
     실패하며 임베딩 자체가 되지 않는다(직접 재현해 확인한 사실 — 6절 "실패
     상황 실습" 참고). ``check_embedding_ctx_length=False``를 주면 토큰 수를
     세지 않고 원문 문자열을 그대로 ``/embeddings``에 보낸다 — 4·5단계의
-    ``embed_texts``가 애초에 하던 방식과 같다.
+    ``embed``가 애초에 하던 방식과 같다.
     """
 
     s = settings or get_settings()

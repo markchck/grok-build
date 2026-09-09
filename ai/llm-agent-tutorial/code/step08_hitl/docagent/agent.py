@@ -68,8 +68,8 @@ class AgentEvent:
     data: dict[str, Any]
 
 
-ChatFn = Callable[..., dict[str, Any]]
-AsyncChatFn = Callable[..., Awaitable[dict[str, Any]]]
+ChatFn = Callable[..., llm.ChatResult]
+AsyncChatFn = Callable[..., Awaitable[llm.ChatResult]]
 
 
 # ---------------------------------------------------------------------------
@@ -303,7 +303,7 @@ def advance_run(
     conn,
     run_id: str,
     *,
-    chat_fn: ChatFn = llm.chat_completion_full,
+    chat_fn: ChatFn = llm.chat,
     settings: Settings | None = None,
     tool_names: list[str] | None = None,
 ) -> Iterator[AgentEvent]:
@@ -382,14 +382,18 @@ def _run_loop(
         yield AgentEvent("status", {"stage": "planning", "message": f"{run.step}단계: 모델에게 다음 행동을 묻는다"})
 
         try:
-            response = chat_fn(run.messages, tools=tool_specs, tool_choice="auto", settings=settings)
+            response = chat_fn(run.messages, tools=tool_specs, settings=settings)
         except llm.LLMError as exc:
             yield AgentEvent("error", {"code": "llm_error", "message": str(exc)})
             yield _finish(conn, run, "cancelled")
             return
 
-        assistant_message = response["message"]
-        usage = response.get("usage") or {}
+        assistant_message = {
+            "role": "assistant",
+            "content": response.text or None,
+            "tool_calls": response.tool_calls or None,
+        }
+        usage = (response.raw or {}).get("usage") or {}
         _accumulate_usage(run, usage, run.messages, assistant_message)
         run.messages.append(assistant_message)
         store.save_run(conn, run)
@@ -509,7 +513,7 @@ def _run_loop(
 # 아래 ``aadvance_run``/``_arun_loop``는 위 ``advance_run``/``_run_loop``와
 # 로직이 완전히 같다. 다른 점은 모델 호출을 ``await chat_fn(...)``으로 하는
 # 것뿐이다 — 이 ``await`` 지점이 있어야 클라이언트가 연결을 끊었을 때(이
-# 제너레이터를 도는 태스크가 취소될 때) 그 취소가 ``achat_completion_full``
+# 제너레이터를 도는 태스크가 취소될 때) 그 취소가 ``achat``
 # 안의 취소 처리까지 전달되어 모델 서버로 나가는 HTTP 연결이 실제로 닫힌다.
 # ``_resolve_pending_approval``은 순수 상태 전이 로직(SQLite 읽기/쓰기)이라
 # 모델을 부르지 않는다 — 동기 버전을 그대로 수동으로 순회해서 쓴다(async
@@ -520,7 +524,7 @@ async def aadvance_run(
     conn,
     run_id: str,
     *,
-    chat_fn: AsyncChatFn = llm.achat_completion_full,
+    chat_fn: AsyncChatFn = llm.achat,
     settings: Settings | None = None,
     tool_names: list[str] | None = None,
 ) -> AsyncIterator[AgentEvent]:
@@ -592,14 +596,18 @@ async def _arun_loop(
         yield AgentEvent("status", {"stage": "planning", "message": f"{run.step}단계: 모델에게 다음 행동을 묻는다"})
 
         try:
-            response = await chat_fn(run.messages, tools=tool_specs, tool_choice="auto", settings=settings)
+            response = await chat_fn(run.messages, tools=tool_specs, settings=settings)
         except llm.LLMError as exc:
             yield AgentEvent("error", {"code": "llm_error", "message": str(exc)})
             yield _finish(conn, run, "cancelled")
             return
 
-        assistant_message = response["message"]
-        usage = response.get("usage") or {}
+        assistant_message = {
+            "role": "assistant",
+            "content": response.text or None,
+            "tool_calls": response.tool_calls or None,
+        }
+        usage = (response.raw or {}).get("usage") or {}
         _accumulate_usage(run, usage, run.messages, assistant_message)
         run.messages.append(assistant_message)
         store.save_run(conn, run)

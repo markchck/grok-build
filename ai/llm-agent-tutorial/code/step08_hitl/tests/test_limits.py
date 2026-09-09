@@ -10,6 +10,7 @@ import time
 
 from docagent import store
 from docagent.agent import advance_run, start_run
+from docagent.llm import ChatResult
 
 
 def _tool_call_message(call_id: str, name: str, arguments_json: str) -> dict:
@@ -30,6 +31,15 @@ def _events_by_kind(events, kind):
     return [e for e in events if e.kind == kind]
 
 
+def _to_chat_result(msg: dict, usage: dict) -> ChatResult:
+    return ChatResult(
+        text=msg.get("content") or "",
+        finish_reason=None,
+        tool_calls=msg.get("tool_calls") or [],
+        raw={"usage": usage},
+    )
+
+
 def _run(conn, message, chat_fn, settings=None):
     run_id = start_run(conn, message)
     events = list(advance_run(conn, run_id, chat_fn=chat_fn, settings=settings))
@@ -46,7 +56,7 @@ def test_happy_path_tool_then_final_answer():
             msg = _tool_call_message("call_1", "sum_sales", '{"product": "노트북", "quarter": "Q1"}')
         else:
             msg = _final_message("1분기 노트북 매출 합계를 확인했다.")
-        return {"message": msg, "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}}
+        return _to_chat_result(msg, {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15})
 
     run_id, evs = _run(conn, "1분기 노트북 매출 알려줘", fake_chat)
 
@@ -69,7 +79,7 @@ def test_max_steps_limit_stops_the_loop():
     def fake_chat(messages, tools=None, tool_choice=None, temperature=0.2, settings=None):
         n = sum(1 for m in messages if m.get("role") == "assistant")
         msg = _tool_call_message(f"call_{n}", "sum_sales", f'{{"product": "노트북{n}"}}')
-        return {"message": msg, "usage": {}}
+        return _to_chat_result(msg, {})
 
     from docagent.config import load_settings
 
@@ -90,7 +100,7 @@ def test_timeout_stops_the_loop():
         time.sleep(0.05)
         n = sum(1 for m in messages if m.get("role") == "assistant")
         msg = _tool_call_message(f"call_{n}", "sum_sales", f'{{"product": "노트북{n}"}}')
-        return {"message": msg, "usage": {}}
+        return _to_chat_result(msg, {})
 
     from docagent.config import load_settings
 
@@ -111,7 +121,7 @@ def test_repeated_same_tool_call_is_blocked():
     def fake_chat(messages, tools=None, tool_choice=None, temperature=0.2, settings=None):
         n = sum(1 for m in messages if m.get("role") == "assistant")
         msg = _tool_call_message(f"call_{n}", "sum_sales", '{"product": "노트북"}')
-        return {"message": msg, "usage": {}}
+        return _to_chat_result(msg, {})
 
     from docagent.config import load_settings
 
@@ -135,7 +145,7 @@ def test_no_progress_detected_when_args_differ_but_result_never_changes():
     def fake_chat(messages, tools=None, tool_choice=None, temperature=0.2, settings=None):
         n = sum(1 for m in messages if m.get("role") == "assistant")
         msg = _tool_call_message(f"call_{n}", "flaky_lookup", f'{{"query": "질의-{n}"}}')
-        return {"message": msg, "usage": {}}
+        return _to_chat_result(msg, {})
 
     from docagent.config import load_settings
 
@@ -158,7 +168,7 @@ def test_token_budget_exceeded_with_real_usage():
     def fake_chat(messages, tools=None, tool_choice=None, temperature=0.2, settings=None):
         n = sum(1 for m in messages if m.get("role") == "assistant")
         msg = _tool_call_message(f"call_{n}", "sum_sales", f'{{"product": "노트북{n}"}}')
-        return {"message": msg, "usage": {"prompt_tokens": 100, "completion_tokens": 100, "total_tokens": 200}}
+        return _to_chat_result(msg, {"prompt_tokens": 100, "completion_tokens": 100, "total_tokens": 200})
 
     from docagent.config import load_settings
 
@@ -183,7 +193,7 @@ def test_token_budget_estimated_when_server_omits_usage():
         # 아주 긴 인자를 넣어서 추정 토큰 수가 빠르게 예산을 넘도록 만든다.
         long_query = "질의" * 500
         msg = _tool_call_message(f"call_{n}", "flaky_lookup", f'{{"query": "{long_query}{n}"}}')
-        return {"message": msg, "usage": {}}  # usage 없음
+        return _to_chat_result(msg, {})  # usage 없음
 
     from docagent.config import load_settings
 

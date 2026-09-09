@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from docagent import store
 from docagent.agent import advance_run, start_run
 from docagent.config import load_settings
+from docagent.llm import ChatResult
 
 
 def _tool_call_message(call_id: str, name: str, arguments_json: str) -> dict:
@@ -35,6 +36,15 @@ def _tool_call_message(call_id: str, name: str, arguments_json: str) -> dict:
             {"id": call_id, "type": "function", "function": {"name": name, "arguments": arguments_json}}
         ],
     }
+
+
+def _to_chat_result(msg: dict) -> ChatResult:
+    return ChatResult(
+        text=msg.get("content") or "",
+        finish_reason=None,
+        tool_calls=msg.get("tool_calls") or [],
+        raw={"usage": {}},
+    )
 
 
 def run_scenario(title: str, chat_fn, message: str) -> None:
@@ -57,12 +67,12 @@ def run_scenario(title: str, chat_fn, message: str) -> None:
 def scenario_repeated_tool_call() -> None:
     counter = {"n": 0}
 
-    def broken_model(messages, tools=None, tool_choice=None, temperature=0.2, settings=None):
+    def broken_model(messages, tools=None, temperature=0.2, settings=None):
         # 항상 완전히 같은 도구 + 같은 인자만 부른다(call_id는 매번 새로 발급돼서
         # 멱등성 캐시가 아니라 반복 감지 (a)가 이 상황을 잡는다는 것을 분명히 보여준다).
         counter["n"] += 1
         msg = _tool_call_message(f"call_{counter['n']}", "sum_sales", '{"product": "노트북"}')
-        return {"message": msg, "usage": {}}
+        return _to_chat_result(msg)
 
     run_scenario(
         "시나리오 1: 같은 (도구, 인자) 무한 반복 -> repeated_tool_call",
@@ -74,12 +84,12 @@ def scenario_repeated_tool_call() -> None:
 def scenario_no_progress() -> None:
     counter = {"n": 0}
 
-    def broken_search_model(messages, tools=None, tool_choice=None, temperature=0.2, settings=None):
+    def broken_search_model(messages, tools=None, temperature=0.2, settings=None):
         # 질의는 매번 다르게 만들지만(반복 감지 (a)를 피해간다), flaky_lookup은
         # 어떤 질의를 넣어도 항상 같은 고정 결과만 돌려주는 결함 있는 도구다.
         counter["n"] += 1
         msg = _tool_call_message(f"call_{counter['n']}", "flaky_lookup", f'{{"query": "질의-{counter["n"]}"}}')
-        return {"message": msg, "usage": {}}
+        return _to_chat_result(msg)
 
     run_scenario(
         "시나리오 2: 인자는 다른데 결과가 안 바뀌는 반복 -> no_progress",

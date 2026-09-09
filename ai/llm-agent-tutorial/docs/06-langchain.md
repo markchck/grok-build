@@ -148,7 +148,7 @@ LangChain은 이 네 단계에 공통 타입을 둔다.
 | 개념 | LangChain 타입 | 5단계에서의 대응 |
 | --- | --- | --- |
 | 청크 하나 | `Document`(`page_content` + `metadata`) | 딕셔너리(`text`, `doc_id`, `page`, ...) |
-| 임베딩 모델 | `Embeddings`(`embed_documents`/`embed_query`) | `embed_texts()` 함수 |
+| 임베딩 모델 | `Embeddings`(`embed_documents`/`embed_query`) | `embed()` 함수 |
 | 벡터 저장소 | `VectorStore`(`Milvus` 등 구현체) | `MilvusClient` + 직접 만든 스키마 |
 | 검색기 | `Retriever`(`vector_store.as_retriever()`) | `dense_search`/`sparse_search`/`hybrid_search` 함수 |
 
@@ -173,7 +173,7 @@ chain.invoke({"context": ..., "question": ...})   # 한 번에
 chain.stream({"context": ..., "question": ...})    # 조각 단위로
 ```
 
-5단계는 일반 호출(`chat_completion`)과 스트리밍 호출(`stream_chat_completion`)을
+5단계는 일반 호출(`chat`)과 스트리밍 호출(`chat_stream`)을
 따로 만들어야 했다. LCEL 체인은 같은 정의로 두 실행 방식을 다 제공한다 —
 "조립"과 "실행 방식"이 분리돼 있기 때문이다. 다만 이 장의 `/chat`
 엔드포인트는 여전히 "답변을 다 받은 뒤 인용을 검증하고 나서 재생"하는 방식을
@@ -244,7 +244,7 @@ middleware=[a, b, c])`에 넘긴 순서대로 바깥에서 안쪽으로 감싼�
 
 | 기능 | 직접 구현(3·5단계) | LangChain 구현(6단계) | LangChain이 대신 해주는 것 | LangChain을 써도 여전히 직접 해야 하는 것 |
 | --- | --- | --- | --- | --- |
-| 모델 호출 | `httpx.post`/`openai` SDK를 감싼 `chat_completion` | `ChatOpenAI.invoke()` | 재시도·타임아웃 처리, 메시지 타입 변환, 스트리밍/일반 호출 인터페이스 통일 | 서버가 실제로 그 기능(도구 호출 등)을 지원하는지 확인하는 일 |
+| 모델 호출 | `httpx.post`/`openai` SDK를 감싼 `chat` | `ChatOpenAI.invoke()` | 재시도·타임아웃 처리, 메시지 타입 변환, 스트리밍/일반 호출 인터페이스 통일 | 서버가 실제로 그 기능(도구 호출 등)을 지원하는지 확인하는 일 |
 | 도구 정의 | JSON 스키마 딕셔너리 + pydantic 모델을 손으로 맞춤 | `@tool` 데코레이터가 타입 힌트·docstring에서 자동 생성 | 스키마와 구현이 어긋날 가능성 제거 | 도구 실행 실패를 모델에게 어떻게 설명할지(의미 있는 오류 메시지)는 직접 정함 |
 | 도구 실패 처리 | `ToolRunResult(ok=False, ...)`로 항상 감싸 반환 | `ToolErrorMiddleware(on_error=...)`로 예외를 선택적으로 문자열로 변환 | "예외를 ToolMessage로 바꾸는" 배관 자체 | 어떤 예외를 변환할지 판단(모르는 예외까지 삼키면 진짜 버그를 놓친다) |
 | 반복 호출 차단 | `call_counts` 딕셔너리로 (도구, 정규화한 인자) 3회 감지 | 내장 `ToolCallLimitMiddleware`는 **도구 이름당** 횟수만 세고 인자는 구분하지 않는다 — PROJECT-SPEC.md 7장 규칙과 다르다 | 도구 이름 단위의 간단한 횟수 제한 | 인자까지 구분하는 반복 감지는 직접 미들웨어(`RepeatToolCallGuardMiddleware`)로 작성 |
@@ -835,7 +835,7 @@ requests.exceptions.ProxyError: HTTPSConnectionPool(host='openaipublic.blob.core
 
 **해결**: `check_embedding_ctx_length=False`를 준다(`docagent/models.py`에
 반영돼 있다). 토큰 수를 세지 않고 원문 문자열을 그대로 `/embeddings`에
-보낸다 — 4·5단계의 `embed_texts()`가 애초에 하던 방식과 같아진다. 이
+보낸다 — 4·5단계의 `embed()`가 애초에 하던 방식과 같아진다. 이
 문제는 네트워크가 열려 있는 환경에서는 재현되지 않을 수 있다 — 재현
 여부는 인코딩 파일이 로컬에 이미 캐시돼 있는지에 달려 있으므로, "항상
 실패한다"가 아니라 "이 환경에서 실제로 재현했다"는 사실만 기록해 둔다.

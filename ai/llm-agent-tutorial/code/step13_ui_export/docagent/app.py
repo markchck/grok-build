@@ -17,8 +17,9 @@ from __future__ import annotations
 import asyncio
 import html
 import sqlite3
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, AsyncIterator, Literal
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
@@ -33,11 +34,9 @@ from docagent.multiagent.agents import AgentDeps
 from docagent.multiagent.graph_supervisor import build_supervisor_graph, initial_state
 from docagent.rag.store import get_client, make_chunk_id
 
-app = FastAPI(title="docagent step13 - ui and export")
 
-
-@app.on_event("startup")
-def _startup_init_tracing() -> None:
+@asynccontextmanager
+async def _lifespan(_: FastAPI) -> AsyncIterator[None]:
     """9단계 트레이싱을 이 장의 앱 시작 시점에 켠다(설정이 켜져 있을 때만).
 
     ``DOCAGENT_TRACING_ENABLED=false``(기본값)면 ``init_tracing``이 아무 것도
@@ -48,6 +47,10 @@ def _startup_init_tracing() -> None:
     """
 
     tracing.init_tracing(get_settings())
+    yield
+
+
+app = FastAPI(title="docagent step13 - ui and export", lifespan=_lifespan)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 STATIC_DIR = BASE_DIR / "static"

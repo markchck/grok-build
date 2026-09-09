@@ -249,9 +249,13 @@ async def aembed(texts: list[str], *, settings=None) -> list[list[float]]: ...
 그래서 **2단계 이후 서버 코드(app.py, 그래프 노드)는 `achat`/`achat_stream`을 쓴다.**
 
 - `settings=None`이면 `get_settings()`를 쓴다. 테스트는 `settings=`로 주입한다.
-- 내부 구현은 `openai` SDK를 쓴다. **예외는 1단계뿐이다.** 1단계는 HTTP 계층을 가르치기 위해
-  `raw_chat_completion`, `raw_chat_completion_stream`을 추가로 두고 SDK 구현과 나란히 비교한다.
-  2단계 이후에는 SDK 경로만 쓴다.
+- 내부 구현은 `openai` SDK를 쓴다. **예외는 두 곳이다.**
+  - 1단계는 HTTP 계층을 가르치기 위해 `raw_chat_completion`, `raw_chat_completion_stream`을
+    추가로 두고 SDK 구현과 나란히 비교한다.
+  - 8단계 `llm.py`는 내부적으로 `httpx`를 직접 쓴다. 공개 인터페이스(함수 이름, `ChatResult`
+    반환, `LLMError`)는 규격과 같으므로 호출부는 차이를 모른다. 이름을 규격에 맞추는 작업에서
+    HTTP 클라이언트까지 바꾸면 검증 범위가 넓어져 그대로 뒀다. 기능 차이가 아니라
+    **알고 남겨둔 편차**다.
 - 모든 오류는 `LLMError`로 감싸서 올린다. 호출부가 라이브러리 예외 타입을 알 필요가 없게 한다.
 
 ## 10. 의존성 버전 정책

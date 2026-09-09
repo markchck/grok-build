@@ -15,6 +15,7 @@ import pytest
 
 from docagent import store, tools
 from docagent.agent import advance_run, start_run
+from docagent.llm import ChatResult
 
 
 def _tool_call_message(call_id: str, name: str, arguments_json: str) -> dict:
@@ -48,10 +49,19 @@ def _reset_archived_reports():
     tools.ARCHIVED_REPORTS.clear()
 
 
+def _to_chat_result(msg: dict, usage: dict) -> ChatResult:
+    return ChatResult(
+        text=msg.get("content") or "",
+        finish_reason=None,
+        tool_calls=msg.get("tool_calls") or [],
+        raw={"usage": usage},
+    )
+
+
 def _archive_chat_fn(calls):
     """첫 호출에서 archive_report를 부르고, 도구 결과가 들어오면 최종 답을 낸다."""
 
-    def fake_chat(messages, tools=None, tool_choice=None, temperature=0.2, settings=None):
+    def fake_chat(messages, tools=None, temperature=0.2, settings=None):
         calls["n"] += 1
         already_ran = any(m.get("role") == "tool" for m in messages)
         if already_ran:
@@ -60,7 +70,7 @@ def _archive_chat_fn(calls):
             msg = _tool_call_message(
                 "call_1", "archive_report", '{"report_id": "notebook-q1-report", "reason": "분기 종료"}'
             )
-        return {"message": msg, "usage": {"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10}}
+        return _to_chat_result(msg, {"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10})
 
     return fake_chat
 

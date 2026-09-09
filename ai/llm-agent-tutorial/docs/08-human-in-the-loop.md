@@ -327,7 +327,7 @@ code/step08_hitl/
 ├── .env.example
 ├── docagent/
 │   ├── config.py     # Settings에 max_agent_tokens, state_db_path 추가
-│   ├── llm.py         # chat_completion_full()로 usage까지 돌려준다
+│   ├── llm.py         # chat()/achat()이 ChatResult.raw로 usage까지 돌려준다
 │   ├── events.py      # done 이벤트에 partial 필드, finish_reason에 token_budget 추가
 │   ├── tools.py        # 3단계 도구 + archive_report(승인 필요) + flaky_lookup(결함 데모)
 │   ├── store.py        # SQLite: runs / approvals / tool_cache 세 테이블
@@ -571,8 +571,8 @@ async def chat(req: ChatRequest, request: Request) -> StreamingResponse:
                               headers={"X-Run-Id": run_id})
 ```
 
-`advance_run`(동기, `llm.chat_completion_full`을 쓴다)이 아니라 `aadvance_run`
-(비동기, `llm.achat_completion_full`을 쓴다)을 쓰는 이유는 PROJECT-SPEC.md 9절의
+`advance_run`(동기, `llm.chat`을 쓴다)이 아니라 `aadvance_run`
+(비동기, `llm.achat`을 쓴다)을 쓰는 이유는 PROJECT-SPEC.md 9절의
 취소 요구사항이다 — 2단계부터 이어진 것과 같은 이유로, 클라이언트가 연결을
 끊었을 때 모델 서버로 나가는 HTTP 호출까지 실제로 취소하려면 이벤트 루프가 그
 호출을 직접 취소할 수 있어야 한다. 로직은 두 함수가 완전히 같고 모델 호출

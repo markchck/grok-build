@@ -10,16 +10,16 @@
 2. ``docs/06-langchain.md`` 7절(직접 구현 vs LangChain 비교)이 코드를 나란히
    놓고 설명한다.
 
-PROJECT-SPEC.md 9절은 이 인터페이스의 표준 이름을 ``chat()``/``chat_stream()``/
-``chat_json()``/``embed()``로 정하고 있지만, 1~5단계가 이미
-``chat_completion``/``stream_chat_completion``/``embed_texts``로 구현해 두었다.
-이 장은 5단계까지의 실제 코드와 이어지는 것을 우선해 이름을 그대로 둔다 —
-이름을 스펙에 맞추는 것은 이 장의 범위가 아니다.
+PROJECT-SPEC.md 9절이 고정한 공통 인터페이스(``chat`` / ``chat_stream`` /
+``embed`` / ``LLMError``)를 쓴다. 함수 몸체는 5단계와 동일하다 — 옛 이름
+(``chat_completion``/``stream_chat_completion``/``embed_texts``)만 스펙에
+맞춰 정리했다.
 """
 
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass, field
 from typing import Any, Iterator
 
 import httpx
@@ -31,6 +31,14 @@ class LLMError(RuntimeError):
     """모델 서버 호출 실패(HTTP 오류, 타임아웃, 잘못된 응답 형식)."""
 
 
+@dataclass(frozen=True)
+class ChatResult:
+    text: str
+    finish_reason: str | None
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
 def _headers() -> dict[str, str]:
     return {
         "Authorization": f"Bearer {settings.openai_api_key}",
@@ -38,12 +46,12 @@ def _headers() -> dict[str, str]:
     }
 
 
-def chat_completion(
+def chat(
     messages: list[dict[str, Any]],
     *,
     temperature: float = 0.2,
-) -> dict[str, Any]:
-    """비-스트리밍 호출. choices[0].message 딕셔너리를 반환한다."""
+) -> ChatResult:
+    """비-스트리밍 호출."""
 
     payload: dict[str, Any] = {
         "model": settings.chat_model,
@@ -63,12 +71,20 @@ def chat_completion(
 
     data = resp.json()
     try:
-        return data["choices"][0]["message"]
+        choice = data["choices"][0]
+        message = choice["message"]
     except (KeyError, IndexError) as exc:
         raise LLMError(f"예상하지 못한 응답 형식: {data}") from exc
 
+    return ChatResult(
+        text=message.get("content") or "",
+        finish_reason=choice.get("finish_reason"),
+        tool_calls=message.get("tool_calls") or [],
+        raw=data,
+    )
 
-def stream_chat_completion(messages: list[dict[str, Any]]) -> Iterator[str]:
+
+def chat_stream(messages: list[dict[str, Any]]) -> Iterator[str]:
     """스트리밍 호출. delta.content 조각을 순서대로 yield한다."""
 
     payload = {
@@ -100,7 +116,7 @@ def stream_chat_completion(messages: list[dict[str, Any]]) -> Iterator[str]:
         raise LLMError(f"모델 서버 호출 실패: {exc}") from exc
 
 
-def embed_texts(texts: list[str]) -> list[list[float]]:
+def embed(texts: list[str]) -> list[list[float]]:
     """``POST {OPENAI_BASE_URL}/embeddings``로 Dense 임베딩을 만든다.
 
     OpenAI 호환 서버는 대부분 아래 형태로 응답한다.
