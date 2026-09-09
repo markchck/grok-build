@@ -266,6 +266,53 @@ def make_verifier_node(deps: AgentDeps) -> Callable[[CollabState], dict]:
     return verifier
 
 
+# ---------------------------------------------------------------------------
+# verifier의 A2A 버전: 같은 일을 하지만 별도 프로세스에 위임한다.
+# ---------------------------------------------------------------------------
+
+
+def make_verifier_node_a2a(deps: AgentDeps) -> Callable[[CollabState], dict]:
+    """내부 verifier 노드와 판정 로직은 같지만, 계산을 이 프로세스가 하지 않고
+    ``a2a_min.server``로 실행 중인 별도 에이전트에게 맡긴다.
+
+    이 노드가 하는 일은 "결과를 어떻게 해석하는가"가 아니라 "그 결과를 어디서
+    누가 만들어내는가"에서 내부 verifier와 갈린다 — docs/11-multi-agent.md
+    2-7절의 비교표가 가리키는 차이를 코드로 만든 것이다.
+    """
+
+    from docagent.a2a_min import client as a2a_client
+
+    def verifier_a2a(state: CollabState) -> dict:
+        investigation = state.get("investigation") or {}
+        analysis = state.get("analysis") or {}
+        rows = investigation.get("rows", [])
+
+        try:
+            result = a2a_client.submit_and_wait(
+                deps.settings.a2a_verifier_url,
+                skill_id="verify_quarterly_analysis",
+                task_input={"analysis": analysis, "rows": rows},
+            )
+            source = "a2a_agent"
+        except a2a_client.A2AClientError as exc:
+            # 외부 에이전트에 닿지 못해도 협업 전체를 실패시키지 않는다 — 검증을
+            # 생략했다는 사실을 기록하고 계속 진행한다(3·7·8단계와 같은 원칙:
+            # 외부 호출 실패가 곧 애플리케이션 실패는 아니다).
+            result = {"ok": False, "reason": f"외부 검증 에이전트 호출 실패: {exc}"}
+            source = "a2a_agent_unreachable"
+
+        verification = {**result, "source": source}
+        note = f"[verifier(A2A)] 검증 결과: {'통과' if result.get('ok') else '불일치'} ({result.get('reason')}, 판단 주체: {source})"
+        return {
+            "verification": verification,
+            "shared_notes": [note],
+            "hops_used": state["hops_used"] + 1,
+            "trace": [_trace("verifying", note)],
+        }
+
+    return verifier_a2a
+
+
 def make_finish_node(deps: AgentDeps) -> Callable[[CollabState], dict]:
     """세 에이전트의 결과를 하나의 답변으로 합친다. 이 노드가 "결과 통합"을 맡는다."""
 

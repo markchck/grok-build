@@ -1,0 +1,30 @@
+# 이 단계에서 실제로 쓰는 패키지만 나열한다. 버전은 범위로 쓴다(PROJECT-SPEC.md 10절).
+# 확인된 기준선(2026-09-09, 이 장 작성 시 실제 설치로 확인 — docs/12-deep-agents-skills.md 참고 문서):
+# deepagents 0.7.13, langchain 1.4.0, langchain-core 1.6.2, langgraph 1.2.11,
+# langchain-openai 1.6.1, openai 3.10.0.
+
+# Deep Agents 본체: 계획(write_todos용 미들웨어는 langchain에서 따로 들여온다),
+# 파일시스템 백엔드, 스킬 로딩(SkillsMiddleware), 하위 에이전트 위임(task 도구)을 제공한다.
+deepagents>=0.7,<0.8
+
+# deepagents가 내부적으로 langgraph에 의존해 설치하지만, docagent.deep_agent가
+# TodoListMiddleware를 명시적으로 가져다 쓰므로 langchain도 명시한다.
+langchain>=1.4,<2.0
+
+# ChatOpenAI — OpenAI 호환 서버(base_url 지정)에 붙는 LangChain 모델 인터페이스.
+# Deep Agents는 이 타입(BaseChatModel)을 요구하므로 docagent.llm(직접 구현 경로)과
+# 별개로 필요하다(docagent/llm.py 상단 설명 참고).
+langchain-openai>=1.6,<2.0
+
+# docagent.llm(PROJECT-SPEC.md 9절 인터페이스)이 그대로 쓰는 SDK. langchain-openai가
+# 이미 끌어오지만 명시적으로도 남겨 둔다(이전 단계와 동일한 관례).
+openai>=3.10,<4.0
+
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.30,<1.0
+python-dotenv>=1.0,<2.0
+pydantic>=2.7,<3.0
+httpx>=0.28,<0.29
+
+# 단위 테스트 실행용.
+pytest>=8.0,<9.0

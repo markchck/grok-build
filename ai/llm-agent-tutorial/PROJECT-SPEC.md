@@ -80,6 +80,11 @@ MAX_AGENT_SECONDS=120
 MAX_AGENT_TOKENS=4000
 DOCAGENT_STATE_DB=./data/hitl_state.db
 
+# 11단계부터 사용 (멀티에이전트 협업 한도 · A2A 최소 흉내 서버 주소)
+MAX_AGENT_HANDOFFS=4
+MAX_COLLAB_TOKENS=6000
+A2A_VERIFIER_URL=http://127.0.0.1:8292
+
 # 9단계부터 사용 (트레이싱)
 # 주의: 접두사를 DOCAGENT_로 붙인다. phoenix.otel.register()가
 # PHOENIX_COLLECTOR_ENDPOINT, PHOENIX_PROJECT_NAME을 자기 환경 변수로 이미
@@ -88,6 +93,16 @@ DOCAGENT_STATE_DB=./data/hitl_state.db
 DOCAGENT_TRACING_ENABLED=false
 DOCAGENT_PHOENIX_ENDPOINT=http://localhost:6006/v1/traces
 DOCAGENT_TRACE_PROJECT_NAME=docagent
+
+# 10단계부터 사용 (MCP 서버 연결)
+# docagent(Host/Client)가 mcp_server를 자식 프로세스로 띄울 때 쓰는 명령이다.
+# args는 콤마로 구분한 문자열이다(docagent/config.py 참고).
+DOCAGENT_MCP_SERVER_COMMAND=python
+DOCAGENT_MCP_SERVER_ARGS=-m,mcp_server.server
+DOCAGENT_MCP_CONNECT_TIMEOUT_SECONDS=5
+DOCAGENT_MCP_CALL_TIMEOUT_SECONDS=20
+# mcp_server(별도 프로세스) 쪽이 읽는 값. CSV 조회 도구가 읽을 파일 경로다.
+DOCAGENT_MCP_SALES_CSV=./data/sales.csv
 ```
 
 새 환경 변수가 필요한 장은 위 목록에 **추가만** 하고 기존 이름을 바꾸지 않는다.
@@ -113,7 +128,7 @@ DOCAGENT_TRACE_PROJECT_NAME=docagent
 | `status` | `{"stage": "...", "message": "..."}` | 진행 표시(=요구사항의 "thinking 과정 표시"). 실제 실행 이벤트만 담는다 |
 | `tool_call` | `{"id","name","args"}` | 도구 호출 시작 |
 | `tool_result` | `{"id","ok","summary"}` | 도구 실행 결과 요약 |
-| `todo` | `{"items":[{"id","title","state"}]}` | 작업 목록. `state`는 `pending`/`running`/`done`/`failed` |
+| `todo` | `{"items":[{"id","title","state"}]}` | 작업 목록. `state`는 `pending`/`running`/`done`/`failed`. **`failed`는 모델이 알려주지 않는다** — 12단계 실측 기준 `write_todos` 도구의 status에는 `pending`/`in_progress`/`completed`만 있다. 따라서 애플리케이션이 도구 호출 실패를 관측한 시점에 그때 진행 중이던 항목을 `failed`로 표시한다(추측이 아니라 실제 실행 사실) |
 | `sources` | `{"items":[{"id","doc","page","url","snippet"}]}` | 근거 목록 |
 | `approval_request` | `{"id","action","args","reason"}` | 사용자 승인 요청 |
 | `error` | `{"code","message"}` | 오류 |
@@ -158,7 +173,8 @@ DOCAGENT_TRACE_PROJECT_NAME=docagent
 - 최대 실행 시간: `MAX_AGENT_SECONDS`
 - 같은 `(도구 이름, 정규화한 인자)` 조합이 3회 반복되면 중단한다.
 - 중단 시 `error` 이벤트가 아니라 `done` 이벤트에 `finish_reason`을 넣고 부분 결과를 함께 반환한다.
-  `finish_reason` 값: `stop`, `max_steps`, `timeout`, `repeated_tool_call`, `no_progress`, `rejected_by_user`, `cancelled`, `token_budget`(8단계에서 추가 — 누적 토큰 예산 초과. 기존 값 중 아무것도 이 의미를 담지 못해 새로 추가했다).
+  `finish_reason` 값: `stop`, `max_steps`, `timeout`, `repeated_tool_call`, `no_progress`, `rejected_by_user`, `cancelled`, `token_budget`(8단계에서 추가 — 누적 토큰 예산 초과. 기존 값 중 아무것도 이 의미를 담지 못해 새로 추가했다), `delegation_loop`(11단계에서 추가 — 에이전트끼리 제어권을 주고받는 핸드오프가 상호 위임 루프에 빠진 경우. `repeated_tool_call`은 "같은 (도구,인자) 조합"을 가리키는 이름이라 의미가 다르다).
+- 11단계는 위 한도를 **협업 전체 단위**로 확장한다: 여러 에이전트가 관여하는 협업 하나의 누적 단계 수(`hops_used`, `MAX_AGENT_STEPS`를 그래프 노드 실행 횟수로 재사용)와 누적 토큰(`MAX_COLLAB_TOKENS`, "협업 전체"라는 새 단위이므로 8단계의 `MAX_AGENT_TOKENS`와 이름을 분리했다), 그리고 핸드오프 사슬 길이(`MAX_AGENT_HANDOFFS`, 새로 추가)를 각각 검사한다.
 
 ## 8. 모델 서버 기능 확인
 

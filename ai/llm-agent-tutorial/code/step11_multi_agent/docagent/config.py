@@ -99,7 +99,7 @@ def load_settings() -> Settings:
         max_agent_tokens=_get_int("MAX_AGENT_TOKENS", 4000),
         max_agent_handoffs=_get_int("MAX_AGENT_HANDOFFS", 4),
         max_collab_tokens=_get_int("MAX_COLLAB_TOKENS", 6000),
-        a2a_verifier_url=os.environ.get("A2A_VERIFIER_URL", "http://127.0.0.1:8291"),
+        a2a_verifier_url=os.environ.get("A2A_VERIFIER_URL", "http://127.0.0.1:8292"),
     )
 
 

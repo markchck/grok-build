@@ -1,0 +1,26 @@
+# 이 단계에서 실제로 쓰는 패키지만 나열한다.
+# 버전은 범위로 쓴다(PROJECT-SPEC.md 10절 기준선, 2026-09-09 실측). 이전 단계에
+# 이미 있던 패키지(openai, fastapi, uvicorn, python-dotenv, pydantic, httpx,
+# pymilvus)는 같은 범위를 그대로 쓴다.
+
+# MCP 파이썬 SDK. 2026-09-09 시점 PyPI 최신은 2.2.0이며, mcp 2.x부터
+# FastMCP가 MCPServer로 이름이 바뀌었다(mcp.server.mcpserver.MCPServer).
+# mcp<2로 pin하면 옛 mcp.server.fastmcp.FastMCP API를 그대로 쓸 수 있지만,
+# 이 튜토리얼은 pip이 지금 설치하는 실제 최신 버전을 기준으로 썼다(장 본문
+# 3-1절, "참고 문서" 참고). mcp[cli]는 서버를 개발용 CLI로 검사하는
+# 선택 기능까지 포함한다.
+mcp[cli]>=2.0,<3
+
+pymilvus[milvus-lite]>=2.6,<3  # mcp_server 쪽 dense 검색(Milvus 클라이언트 + Lite 내장 모드, Windows 미지원)
+
+openai>=3.10,<4                 # 채팅(docagent/llm.py) + 임베딩(mcp_server/search.py) 호출
+
+fastapi>=0.115,<1.0              # 웹 프레임워크 (docagent/app.py)
+uvicorn[standard]>=0.30,<1.0     # ASGI 서버
+python-dotenv>=1.0,<2            # .env 파일에서 환경 변수 로딩
+pydantic>=2.7,<3                 # 요청 바디·MCP 도구 인자 검증
+
+# 단위/통합 테스트 실행용. MCP 클라이언트 코드가 async def이므로 이 장부터
+# pytest-asyncio가 필요하다(3~9단계에는 없었다).
+pytest>=8.0,<9
+pytest-asyncio>=0.24,<1

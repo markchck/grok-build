@@ -25,7 +25,14 @@ from __future__ import annotations
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
-from docagent.multiagent.agents import AgentDeps, make_analyst_node, make_finish_node, make_investigator_node, make_verifier_node
+from docagent.multiagent.agents import (
+    AgentDeps,
+    make_analyst_node,
+    make_finish_node,
+    make_investigator_node,
+    make_verifier_node,
+    make_verifier_node_a2a,
+)
 from docagent.multiagent.state import CollabState
 from docagent.multiagent.supervisor import make_route_after_supervisor, make_supervisor_node
 
@@ -44,13 +51,22 @@ def _make_budget_exceeded_node(deps: AgentDeps):
     return budget_exceeded
 
 
-def build_supervisor_graph(deps: AgentDeps) -> CompiledStateGraph:
+def build_supervisor_graph(deps: AgentDeps, *, external_verifier: bool = False) -> CompiledStateGraph:
+    """``external_verifier=True``면 verifier 노드를 내부 함수 호출 대신 별도
+
+    프로세스(``docagent.a2a_min.server``, 4-7절)에 위임하는 버전으로 바꾼다.
+    나머지 그래프 모양(슈퍼바이저가 위임하고 제어권이 돌아오는 구조)은
+    똑같다 — 바뀌는 것은 verifier 노드 "안에서" 계산이 일어나는 위치뿐이다.
+    이것이 "내부 협업"과 "별도 에이전트와의 작업 교환"이 이 장에서 같은
+    그래프 구조 위에서 나란히 비교되는 지점이다.
+    """
+
     graph = StateGraph(CollabState)
 
     graph.add_node("supervisor", make_supervisor_node(deps))
     graph.add_node("investigator", make_investigator_node(deps))
     graph.add_node("analyst", make_analyst_node(deps))
-    graph.add_node("verifier", make_verifier_node(deps))
+    graph.add_node("verifier", make_verifier_node_a2a(deps) if external_verifier else make_verifier_node(deps))
     graph.add_node("finish", make_finish_node(deps))
     graph.add_node("budget_exceeded", _make_budget_exceeded_node(deps))
 

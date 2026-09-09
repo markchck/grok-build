@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<title>docagent - Deep Agents와 Skills</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 760px; margin: 40px auto; padding: 0 16px; }
+  #log { white-space: pre-wrap; border: 1px solid #ddd; border-radius: 8px; padding: 16px; min-height: 120px; font-size: 14px; }
+  #status { color: #666; font-size: 13px; min-height: 18px; }
+  form { display: flex; gap: 8px; margin-bottom: 16px; }
+  input[type=text] { flex: 1; padding: 8px; }
+  button { padding: 8px; }
+  #todo-box { border: 1px solid #ccc; border-radius: 8px; padding: 12px; margin-bottom: 16px; }
+  #todo-box h3 { margin: 0 0 8px; font-size: 14px; }
+  #todo-list { list-style: none; margin: 0; padding: 0; font-size: 14px; }
+  #todo-list li { padding: 2px 0; }
+  .state-pending { color: #999; }
+  .state-running { color: #d08c00; font-weight: bold; }
+  .state-done { color: #0a8a3a; }
+  .state-failed { color: #c02020; text-decoration: line-through; }
+</style>
+</head>
+<body>
+  <h1>docagent - Deep Agents와 Skills</h1>
+  <p>예시: <code>제품별 매출 변화를 분석하고 원인을 문서에서 찾아줘</code></p>
+  <form id="chat-form">
+    <input type="text" id="message" placeholder="예: 제품별 매출 변화를 분석하고 원인을 찾아줘" required />
+    <button type="submit">보내기</button>
+  </form>
+  <div id="status"></div>
+
+  <div id="todo-box">
+    <h3>작업 계획 (todo)</h3>
+    <ul id="todo-list"><li class="state-pending">(아직 계획 없음)</li></ul>
+  </div>
+
+  <div id="log"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

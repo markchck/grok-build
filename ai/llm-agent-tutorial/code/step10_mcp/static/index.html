@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<title>docagent - step10 MCP</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 760px; margin: 2rem auto; padding: 0 1rem; }
+  #log { border: 1px solid #ccc; border-radius: 8px; padding: 1rem; min-height: 200px; white-space: pre-wrap; }
+  .event { margin: 0.25rem 0; padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.9rem; }
+  .status { color: #666; }
+  .tool_call { background: #eef; }
+  .tool_result_ok { background: #efe; }
+  .tool_result_fail { background: #fee; }
+  .token { font-weight: bold; }
+  .done { color: #888; font-style: italic; }
+  form { margin-top: 1rem; display: flex; gap: 0.5rem; }
+  input[type=text] { flex: 1; padding: 0.5rem; }
+</style>
+</head>
+<body>
+  <h1>docagent — MCP 문서·CSV 도구 에이전트 (10단계)</h1>
+  <p style="color:#666;font-size:0.9rem;">도구는 이 웹 서버가 아니라 별도로 띄운 MCP 서버(<code>mcp_server/server.py</code>)에 있다.</p>
+  <div id="log"></div>
+  <form id="chat-form">
+    <input type="text" id="message" placeholder="예: 2분기 노트북 매출 합계와 감소 원인 알려줘" autocomplete="off" />
+    <button type="submit">보내기</button>
+  </form>
+  <script src="./app.js"></script>
+</body>
+</html>
