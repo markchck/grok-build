@@ -14,6 +14,7 @@ import json
 
 from docagent import store
 from docagent.agent import advance_run, start_run
+from docagent.llm import ChatResult
 
 
 def _tool_call_message(call_id, name, arguments_json):
@@ -26,6 +27,15 @@ def _tool_call_message(call_id, name, arguments_json):
 
 def _final_message(text):
     return {"role": "assistant", "content": text, "tool_calls": None}
+
+
+def _to_chat_result(msg: dict, usage: dict) -> ChatResult:
+    return ChatResult(
+        text=msg.get("content") or "",
+        finish_reason=None,
+        tool_calls=msg.get("tool_calls") or [],
+        raw={"usage": usage},
+    )
 
 
 def _events_by_kind(evs, kind):
@@ -59,7 +69,7 @@ def test_valid_citation_survives_and_invalid_citation_is_dropped(monkeypatch):
         else:
             # S1은 실제 검색 결과에 있고, S9는 모델이 지어낸 번호다.
             msg = _final_message("서울·부산 모두 증가했다[S1]. 알 수 없는 근거[S9]도 있다.")
-        return {"message": msg, "usage": {}}
+        return _to_chat_result(msg, {})
 
     run_id = start_run(conn, "노트북 매출 원인 알려줘")
     evs = list(advance_run(conn, run_id, chat_fn=fake_chat))

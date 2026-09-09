@@ -25,7 +25,17 @@ import pytest
 from docagent import mcp_runtime, store
 from docagent.agent import advance_run, start_run
 from docagent.config import load_settings
+from docagent.llm import ChatResult
 from docagent.mcp_client import McpConnectionError
+
+
+def _to_chat_result(msg: dict, usage: dict) -> ChatResult:
+    return ChatResult(
+        text=msg.get("content") or "",
+        finish_reason=None,
+        tool_calls=msg.get("tool_calls") or [],
+        raw={"usage": usage},
+    )
 
 
 def _settings():
@@ -150,11 +160,10 @@ def test_agent_loop_routes_mcp_search_docs_and_marks_source(monkeypatch):
     def fake_chat(messages, tools=None, tool_choice=None, temperature=0.2, settings=None):
         calls["n"] += 1
         if calls["n"] == 1:
-            return {
-                "message": _tool_call_message("call_1", "mcp_search_docs", '{"query": "노트북 매출", "top_k": 3}'),
-                "usage": {},
-            }
-        return {"message": _final_message("노트북 매출이 증가했다[S1]."), "usage": {}}
+            return _to_chat_result(
+                _tool_call_message("call_1", "mcp_search_docs", '{"query": "노트북 매출", "top_k": 3}'), {}
+            )
+        return _to_chat_result(_final_message("노트북 매출이 증가했다[S1]."), {})
 
     conn = store.connect(":memory:")
     run_id = start_run(conn, "노트북 매출 원인을 MCP로 찾아줘")
@@ -190,11 +199,10 @@ def test_agent_loop_mcp_connection_failure_becomes_tool_result_false(monkeypatch
     def fake_chat(messages, tools=None, tool_choice=None, temperature=0.2, settings=None):
         calls["n"] += 1
         if calls["n"] == 1:
-            return {
-                "message": _tool_call_message("call_1", "mcp_search_docs", '{"query": "노트북 매출"}'),
-                "usage": {},
-            }
-        return {"message": _final_message("검색을 사용할 수 없어 답할 수 없다."), "usage": {}}
+            return _to_chat_result(
+                _tool_call_message("call_1", "mcp_search_docs", '{"query": "노트북 매출"}'), {}
+            )
+        return _to_chat_result(_final_message("검색을 사용할 수 없어 답할 수 없다."), {})
 
     conn = store.connect(":memory:")
     run_id = start_run(conn, "노트북 매출 원인을 MCP로 찾아줘")

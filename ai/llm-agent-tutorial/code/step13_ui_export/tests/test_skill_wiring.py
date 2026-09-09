@@ -14,6 +14,16 @@ import json
 from docagent import skills_runtime, store
 from docagent.agent import advance_run, start_run
 from docagent.config import load_settings
+from docagent.llm import ChatResult
+
+
+def _to_chat_result(msg: dict, usage: dict) -> ChatResult:
+    return ChatResult(
+        text=msg.get("content") or "",
+        finish_reason=None,
+        tool_calls=msg.get("tool_calls") or [],
+        raw={"usage": usage},
+    )
 
 
 def test_csv_analysis_skill_runs_real_script_and_writes_result_file():
@@ -82,11 +92,8 @@ def test_agent_loop_routes_csv_analysis_skill_and_marks_source():
     def fake_chat(messages, tools=None, tool_choice=None, temperature=0.2, settings=None):
         calls["n"] += 1
         if calls["n"] == 1:
-            return {
-                "message": _tool_call_message("call_1", "csv_analysis_skill", "{}"),
-                "usage": {},
-            }
-        return {"message": _final_message("집계를 완료했다."), "usage": {}}
+            return _to_chat_result(_tool_call_message("call_1", "csv_analysis_skill", "{}"), {})
+        return _to_chat_result(_final_message("집계를 완료했다."), {})
 
     conn = store.connect(":memory:")
     run_id = start_run(conn, "매출을 스킬로 분석해줘")
@@ -113,11 +120,8 @@ def test_agent_loop_doc_research_skill_no_keywords_fails_gracefully():
     def fake_chat(messages, tools=None, tool_choice=None, temperature=0.2, settings=None):
         calls["n"] += 1
         if calls["n"] == 1:
-            return {
-                "message": _tool_call_message("call_1", "doc_research_skill", '{"keywords": []}'),
-                "usage": {},
-            }
-        return {"message": _final_message("근거를 찾지 못했다."), "usage": {}}
+            return _to_chat_result(_tool_call_message("call_1", "doc_research_skill", '{"keywords": []}'), {})
+        return _to_chat_result(_final_message("근거를 찾지 못했다."), {})
 
     conn = store.connect(":memory:")
     run_id = start_run(conn, "문서에서 근거를 찾아줘")

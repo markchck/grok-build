@@ -186,7 +186,7 @@ code/step13_ui_export/
 ├── docagent/
 │   ├── config.py        # PROJECT-SPEC 9절 Settings (8단계 필드 + MCP·트레이싱·협업 필드 추가)
 │   ├── events.py         # 5·8·12단계 이벤트 함수를 합친 것 + tool_call.source(신규, 선택 필드)
-│   ├── llm.py             # 8단계 chat_completion_full + 5단계 embed() + 11단계 chat()/chat_json()(신규)
+│   ├── llm.py             # openai SDK 기반 chat()/chat_json()/embed()(PROJECT-SPEC 9절 공통 인터페이스로 통일)
 │   ├── todo.py            # 12단계 TodoIdAssigner를 write_plan 도구에 맞게 옮김
 │   ├── tools.py            # sum_sales/lookup_sales_rows/archive_report(8단계) + write_plan/hybrid_search_docs
 │   ├── skills_runtime.py    # 신규: 12단계 skills/ 스크립트를 도구로 노출(Skill 층)

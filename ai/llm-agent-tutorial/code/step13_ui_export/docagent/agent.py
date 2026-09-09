@@ -172,7 +172,7 @@ class AgentEvent:
         self.data = data
 
 
-ChatFn = Callable[..., dict[str, Any]]
+ChatFn = Callable[..., llm.ChatResult]
 
 
 # ---------------------------------------------------------------------------
@@ -388,7 +388,7 @@ def advance_run(
     conn,
     run_id: str,
     *,
-    chat_fn: ChatFn = llm.chat_completion_full,
+    chat_fn: ChatFn = llm.chat,
     settings: Settings | None = None,
     tool_names: list[str] | None = None,
     include_mcp: bool = False,
@@ -603,7 +603,7 @@ def _run_loop(
                 yield _finish(conn, run, "cancelled")
                 return
 
-            usage_for_span = response.get("usage") or {}
+            usage_for_span = (response.raw or {}).get("usage") or {}
             tracing.set_llm_usage(
                 llm_span,
                 model=settings.chat_model,
@@ -611,10 +611,14 @@ def _run_loop(
                 completion_tokens=usage_for_span.get("completion_tokens"),
                 total_tokens=usage_for_span.get("total_tokens"),
             )
-            tracing.set_output(llm_span, json.dumps(response.get("message", {}), ensure_ascii=False)[:500])
+            assistant_message = {
+                "role": "assistant",
+                "content": response.text or None,
+                "tool_calls": response.tool_calls or None,
+            }
+            tracing.set_output(llm_span, json.dumps(assistant_message, ensure_ascii=False)[:500])
 
-        assistant_message = response["message"]
-        usage = response.get("usage") or {}
+        usage = (response.raw or {}).get("usage") or {}
         _accumulate_usage(run, usage, run.messages, assistant_message)
         run.messages.append(assistant_message)
         store.save_run(conn, run)

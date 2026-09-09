@@ -13,6 +13,7 @@ from __future__ import annotations
 from docagent import store, tracing
 from docagent.agent import advance_run, start_run
 from docagent.config import load_settings, reset_settings_cache
+from docagent.llm import ChatResult
 
 
 def _tool_call_message(call_id: str, name: str, arguments_json: str) -> dict:
@@ -25,6 +26,15 @@ def _tool_call_message(call_id: str, name: str, arguments_json: str) -> dict:
 
 def _final_message(text: str) -> dict:
     return {"role": "assistant", "content": text, "tool_calls": None}
+
+
+def _to_chat_result(msg: dict, usage: dict) -> ChatResult:
+    return ChatResult(
+        text=msg.get("content") or "",
+        finish_reason=None,
+        tool_calls=msg.get("tool_calls") or [],
+        raw={"usage": usage},
+    )
 
 
 def test_tracing_disabled_by_default():
@@ -47,8 +57,8 @@ def test_agent_loop_runs_normally_with_tracing_noop(monkeypatch):
     def fake_chat(messages, tools=None, tool_choice=None, temperature=0.2, settings=None):
         calls["n"] += 1
         if calls["n"] == 1:
-            return {"message": _tool_call_message("call_1", "sum_sales", '{"product": "노트북"}'), "usage": {}}
-        return {"message": _final_message("매출을 확인했다."), "usage": {}}
+            return _to_chat_result(_tool_call_message("call_1", "sum_sales", '{"product": "노트북"}'), {})
+        return _to_chat_result(_final_message("매출을 확인했다."), {})
 
     conn = store.connect(":memory:")
     run_id = start_run(conn, "노트북 매출 확인해줘")
