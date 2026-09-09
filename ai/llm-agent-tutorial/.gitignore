@@ -1,0 +1,12 @@
+# 파이썬
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# 실행 산출물 (각 단계 코드가 만들어 내는 것)
+*.db
+*.db.lock
+.milvus_demo/
+.env

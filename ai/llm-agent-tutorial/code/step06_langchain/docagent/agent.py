@@ -108,27 +108,26 @@ class RepeatToolCallGuardMiddleware(AgentMiddleware):
         return handler(request)
 
 
-class ToolErrorMiddleware(AgentMiddleware):
-    """도구 실행 중 발생한 ``ToolExecutionError``를 예외로 흘리지 않고 ToolMessage로 바꾼다.
+def _handle_tool_execution_error(exc: Exception, request: ToolCallRequest) -> str | None:
+    """``ToolErrorMiddleware(on_error=...)``에 넘기는 콜백.
 
     3단계 ``tools.run_tool()``의 "실패해도 예외를 위로 던지지 않고
     ``ToolRunResult(ok=False, ...)``로 돌려준다"는 규약과 같은 목적이다.
-    **LangChain이 기본으로 이렇게 해주지 않는다** — ``@tool`` 함수 본문에서
-    던진 일반 예외는 ``langgraph.prebuilt.ToolNode``가 기본적으로 그대로
-    다시 던진다(실제로 재현해 확인했다. pydantic 스키마 검증 실패만 자동으로
-    ToolMessage로 바뀐다). 이 미들웨어가 없으면 도구가 ``ToolExecutionError``를
-    던지는 순간 에이전트 실행 전체가 예외로 끝난다.
+    **LangChain이 이 변환을 기본으로 해주지는 않는다** — ``@tool`` 함수
+    본문에서 던진 일반 예외는 ``langgraph.prebuilt.ToolNode``가 기본적으로
+    그대로 다시 던진다(실제로 재현해 확인했다. pydantic 스키마 검증 실패만
+    자동으로 ToolMessage로 바뀐다). 다만 그 변환 자체를 "opt-in 미들웨어
+    하나 추가"로 끝낼 수 있다는 점은 LangChain이 제공하는 것 — 처음에는
+    이 파일에서 ``wrap_tool_call``로 직접 구현했지만, ``langchain.agents.
+    middleware``에 정확히 이 역할을 하는 ``ToolErrorMiddleware``가 이미
+    있다는 것을 알고 나서 그쪽으로 바꿨다(6절에서 두 버전을 비교한다).
+    ``None``을 돌려주면 그 예외는 그대로 전파된다 — 우리가 아는 예외
+    (``ToolExecutionError``)만 골라서 문자열로 바꾸고, 그 외의 예외는
+    프로그램 버그일 가능성이 높으므로 굳이 삼키지 않는다.
     """
-
-    def wrap_tool_call(self, request: ToolCallRequest, handler):
-        try:
-            return handler(request)
-        except ToolExecutionError as exc:
-            return ToolMessage(
-                content=json.dumps({"error": "tool_error", "message": str(exc)}, ensure_ascii=False),
-                tool_call_id=request.tool_call.get("id", ""),
-                name=request.tool_call.get("name", ""),
-            )
+    if isinstance(exc, ToolExecutionError):
+        return json.dumps({"error": "tool_error", "message": str(exc)}, ensure_ascii=False)
+    return None
 
 
 @dataclass
@@ -202,7 +201,7 @@ def build_agent(*, model=None):
     chat_model = model or build_chat_model()
     call_log_mw = CallLoggingMiddleware()
     repeat_guard_mw = RepeatToolCallGuardMiddleware(limit=REPEAT_LIMIT)
-    tool_error_mw = ToolErrorMiddleware()
+    tool_error_mw = ToolErrorMiddleware(on_error=_handle_tool_execution_error)
 
     agent = create_agent(
         model=chat_model,

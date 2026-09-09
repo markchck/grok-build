@@ -163,20 +163,27 @@ Starlette/uvicorn이 ASGI "http.disconnect" 메시지를 받는다   ← 프레�
                  (반복문 안에서 다음 조각을 만들기 전에 먼저 검사)
         │
         ▼
-app._stream_chat_completion_async()의 await loop.run_in_executor(...)가
+app._chat_event_stream()의 async for piece in _stream_chat_completion_async(...)가
 CancelledError를 받는다 (코루틴은 여기서 즉시 멈춘다)
         │
         ▼
-백그라운드 스레드(docagent.llm.chat_stream을 동기로 소비하는 쪽)는 이 취소를
-직접 받지 못한다 → 모델 서버 응답을 끝까지 받고서야 자연히 끝난다
+그 취소는 achat_stream()이 await로 소비하던 async for chunk in stream 지점까지
+그대로 전달되고, achat_stream()의 finally가 await stream.close()와
+await client.close()를 실행해 모델 서버로 가는 HTTP 스트림을 실제로 닫는다
 ```
 
 (A)와 (B)는 같은 목적(빠른 취소)을 서로 다른 방식으로 달성한다. (A)는 프레임워크가
 "알아서" 해 주지만 다음 `await` 지점에서만 작동하므로 반응이 한 박자 늦을 수 있다.
 (B)는 우리가 반복문 안에서 명시적으로 확인해 더 빨리 멈출 수 있지만 코드를 직접
-써야 한다. 이 장은 두 가지를 모두 쓴다 — 다만 (A)·(B) 모두 **코루틴 쪽**을 빨리
-멈출 뿐, 모델 서버로 가는 실제 HTTP 연결은 4.4절에서 설명하듯 별도 스레드 안에
-있어 즉시 끊기지 않는다는 한계가 있다.
+써야 한다. 이 장은 두 가지를 모두 쓴다.
+
+취소가 모델 서버까지 실제로 도달하려면 이 취소 신호가 코루틴 체인을 따라 끊기지
+않고 전달돼야 한다. `docagent/llm.py`가 `chat_stream`(동기)뿐 아니라
+`achat_stream`(비동기, `AsyncOpenAI` 기반)을 같이 두고 서버 코드가 후자를 쓰는
+이유가 여기 있다 — 동기 제너레이터를 별도 스레드에서 돌리는 방식이었다면, 코루틴
+쪽은 즉시 멈춰도 그 스레드 자체는 밖에서 끊을 수 없어 모델 서버 응답을 끝까지
+받고서야 자연히 끝났을 것이다. `achat_stream`은 스레드를 거치지 않고 이벤트 루프
+안에서 직접 실행되므로, 태스크가 취소되면 그 취소가 `finally`까지 그대로 전달된다.
 
 ## 3. 실습 준비
 
