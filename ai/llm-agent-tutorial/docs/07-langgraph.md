@@ -119,17 +119,25 @@ LangGraph 자체도 그래프 전체의 안전장치로 `recursion_limit`(기본
 정하지 않는다. 그 안에서 딱 두 갈래길("이 질문은 잡담인가?", "이 근거로
 충분한가?")의 방향만 모델의 판단을 빌린다.
 
-`classify`와 `verify` 두 노드가 이 방식을 쓴다. 먼저 `docagent.llm.chat_json`
-(PROJECT-SPEC.md 9절 공통 인터페이스, `response_format=json_schema`로 구조화된
-출력을 요청한다)으로 모델에게 판단을 물어본다. 응답이 기대한 키
+`classify`와 `verify` 두 노드가 이 방식을 쓴다. 먼저 `docagent.llm.achat_json`
+(PROJECT-SPEC.md 9절 공통 인터페이스의 비동기 쪽, `response_format=json_schema`로
+구조화된 출력을 요청한다)으로 모델에게 판단을 물어본다. 응답이 기대한 키
 (`category`, `sufficient`)를 기대한 타입으로 담고 있으면 그 판단을 쓰고,
 그렇지 않으면(호출 자체가 실패했거나, 응답이 스키마를 채우지 않았거나) 규칙
 기반 휴리스틱으로 대체한다.
 
+이 그래프의 노드가 `chat_json`(동기)이 아니라 `achat_json`(비동기)을 쓰는 이유는
+2단계부터 이어진 취소 요구사항이다(PROJECT-SPEC.md 9절): 클라이언트가 연결을
+끊었을 때 모델 서버로 나가는 HTTP 호출까지 실제로 취소하려면, `app.py`가
+`graph.astream()`으로 그래프를 도는 것만으로는 부족하고 노드 함수 자신도
+`await`할 수 있는 비동기 호출을 써야 한다 — 그래서 `classify`/`verify`/`answer`/
+`chitchat_answer` 네 노드는 모두 `async def`다(`retrieve_dense`/`retrieve_sparse`는
+Milvus 호출이라 그대로 동기다).
+
 ```python
 # code/step07_langgraph/docagent/graph/nodes.py (발췌, classify)
 try:
-    result = deps.json_chat(..., schema_name="classify_question", json_schema=schema)
+    result = await deps.json_chat(..., schema_name="classify_question", json_schema=schema)
     if isinstance(result.get("category"), str) and result["category"] in ("factual", "chitchat"):
         category = result["category"]
         source = "model"
@@ -468,18 +476,18 @@ class GraphState(TypedDict):
 
 ```python
 # code/step07_langgraph/docagent/graph/nodes.py (발췌)
-def make_verify_node(deps: NodeDeps) -> Callable[[dict], dict]:
+def make_verify_node(deps: NodeDeps) -> Callable[[dict], Awaitable[dict]]:
     schema = {
         "type": "object",
         "properties": {"sufficient": {"type": "boolean"}, "reason": {"type": "string"}},
         "required": ["sufficient", "reason"],
     }
 
-    def verify(state: dict) -> dict:
+    async def verify(state: dict) -> dict:
         retrieved = state.get("retrieved", [])
         sufficient, source = None, "heuristic"
         try:
-            result = deps.json_chat(
+            result = await deps.json_chat(
                 [...], schema_name="verify_evidence", json_schema=schema,
             )
             if isinstance(result.get("sufficient"), bool):
@@ -559,14 +567,14 @@ def expand_query(state: dict) -> dict:
 ```python
 # code/step07_langgraph/docagent/graph/nodes.py (발췌)
 def make_answer_node(deps: NodeDeps):
-    def answer(state: dict) -> dict:
+    async def answer(state: dict) -> dict:
         retrieved = state.get("retrieved", [])[: deps.top_k]
         sources = citations.build_retrieved_sources(retrieved, app_base_url=deps.app_base_url)
         if not sources:
             return {"answer_text": "이 질문에 답할 근거를 문서에서 찾지 못했다.", ...}
 
         context_block = "\n\n".join(f"[{s.label}] (문서: {s.doc_title})\n{s.text}" for s in sources)
-        result_chat = deps.chat([...], temperature=0.2)
+        result_chat = await deps.chat([...], temperature=0.2)
         result = citations.validate_and_link_citations(result_chat.text, sources, app_base_url=deps.app_base_url)
         return {"answer_text": result.text, "citations": result.sources,
                 "trace": [_trace("verifying", ...), _trace("writing", ...)]}
