@@ -255,9 +255,11 @@ function handleEvent(rawEvent, answerText) {
     case "status":
       statusEl.textContent = `[${data.stage}] ${data.message}`;
       break;
-    case "tool_call":
-      appendLog(`-> 도구 호출: ${data.name}(${JSON.stringify(data.args)})`, "entry-tool");
+    case "tool_call": {
+      const source = data.source || "local";
+      appendLog(`-> 도구 호출[${source}]: ${data.name}(${JSON.stringify(data.args)})`, "entry-tool");
       break;
+    }
     case "tool_result":
       appendLog(`<- 결과(ok=${data.ok}): ${data.summary}`, data.ok ? "entry-result-ok" : "entry-result-bad");
       break;

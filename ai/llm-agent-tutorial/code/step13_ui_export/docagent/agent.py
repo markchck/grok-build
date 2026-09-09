@@ -124,30 +124,42 @@ def _select_tools(
     기대는 경우가 있어 기본 동작을 그대로 유지해야 하기 때문이다.
     """
 
+    settings = settings or get_settings()
+
+    # MCP 도구·Skill 도구도 이름으로 선택할 수 있게 조회용 딕셔너리를 미리
+    # 만든다 — tool_names로 "이번엔 mcp_search_docs만 첫 도구로 두고 싶다"
+    # 같은 데모 시나리오를 만들 수 있어야 스텁 서버(항상 tools[0]을 호출)로도
+    # MCP·Skill 분기를 재현할 수 있다.
+    extra_by_name: dict[str, dict[str, Any]] = {}
+    if include_mcp:
+        discovered = mcp_runtime.list_mcp_tool_specs_sync(settings)
+        discovered_names = {spec["function"]["name"] for spec in discovered}
+        # 서버가 응답하지 않아도(discovered가 비어 있어도) 도구 자체는 목록에
+        # 올려 둔다 — 실제 호출 시점에 tool_result(ok=False)로 실패 원인이
+        # 드러나고, 트레이싱을 켜 두면 그 실패가 스팬으로 남는다(9단계 배선).
+        extra_by_name[MCP_SEARCH_TOOL_NAME] = _MCP_SEARCH_TOOL_SPEC
+    if include_skills:
+        for spec in SKILL_TOOL_SPECS:
+            extra_by_name[spec["function"]["name"]] = spec
+
     base = TOOL_SPECS
     if not tool_names:
         selected = list(base)
     else:
-        selected = [_TOOL_SPECS_BY_NAME[name] for name in tool_names if name in _TOOL_SPECS_BY_NAME]
+        selected = [
+            (_TOOL_SPECS_BY_NAME.get(name) or extra_by_name.get(name))
+            for name in tool_names
+            if name in _TOOL_SPECS_BY_NAME or name in extra_by_name
+        ]
         if not selected:
             selected = list(base)
 
-    if include_mcp:
-        settings = settings or get_settings()
-        discovered = mcp_runtime.list_mcp_tool_specs_sync(settings)
-        discovered_names = {spec["function"]["name"] for spec in discovered}
-        if "search_docs" in discovered_names:
-            # 서버가 실제로 응답했다 — 그 스키마를 그대로 쓰되 이름만 로컬 도구와
-            # 겹치지 않게 바꾼다(모델에게는 항상 mcp_search_docs로 보인다).
-            selected = selected + [_MCP_SEARCH_TOOL_SPEC]
-        elif not discovered:
-            # 서버가 지금 응답하지 않는다 — 그래도 도구 자체는 목록에 올려 둔다.
-            # 실제 호출 시점에 tool_result(ok=False)로 실패 원인이 드러나고,
-            # 트레이싱을 켜 두면 그 실패가 스팬으로 남는다(9단계 배선, 6-4절 참고).
-            selected = selected + [_MCP_SEARCH_TOOL_SPEC]
-
+    if include_mcp and extra_by_name.get(MCP_SEARCH_TOOL_NAME) not in selected:
+        selected = selected + [extra_by_name[MCP_SEARCH_TOOL_NAME]]
     if include_skills:
-        selected = selected + list(SKILL_TOOL_SPECS)
+        for spec in SKILL_TOOL_SPECS:
+            if spec not in selected:
+                selected = selected + [spec]
 
     return selected
 
