@@ -544,7 +544,9 @@ async def _chat_stream(req: ChatRequest, request_id: str) -> AsyncIterator[str]:
         return
     ...
     try:
-        result = chat(messages, settings=get_settings())
+        # achat()(동기 chat()이 아니라)을 쓴다 — PROJECT-SPEC.md 9절의 취소
+        # 요구사항 때문이다(2단계와 같은 이유).
+        result = await achat(messages, settings=get_settings())
     except LLMError as exc:
         mark_error(root_span, "llm_call_failed", str(exc))
         yield error_event("llm_call_failed", str(exc))

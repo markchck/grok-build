@@ -554,16 +554,29 @@ def decide_approval(conn, approval_id, *, status, decision_args, mode):
 ```python
 # code/step08_hitl/docagent/app.py (발췌)
 @app.post("/chat")
-def chat(req: ChatRequest) -> StreamingResponse:
+async def chat(req: ChatRequest, request: Request) -> StreamingResponse:
     conn = get_conn()
     run_id = start_run(conn, req.message)
 
-    def event_stream():
-        for agent_event in advance_run(conn, run_id, tool_names=req.tool_names):
-            yield _render_event(agent_event.kind, agent_event.data)
+    async def event_stream():
+        try:
+            async for agent_event in aadvance_run(conn, run_id, tool_names=req.tool_names):
+                if await request.is_disconnected():
+                    return
+                yield _render_event(agent_event.kind, agent_event.data)
+        except asyncio.CancelledError:
+            raise
 
     return StreamingResponse(event_stream(), media_type="text/event-stream",
                               headers={"X-Run-Id": run_id})
+```
+
+`advance_run`(동기, `llm.chat_completion_full`을 쓴다)이 아니라 `aadvance_run`
+(비동기, `llm.achat_completion_full`을 쓴다)을 쓰는 이유는 PROJECT-SPEC.md 9절의
+취소 요구사항이다 — 2단계부터 이어진 것과 같은 이유로, 클라이언트가 연결을
+끊었을 때 모델 서버로 나가는 HTTP 호출까지 실제로 취소하려면 이벤트 루프가 그
+호출을 직접 취소할 수 있어야 한다. 로직은 두 함수가 완전히 같고 모델 호출
+지점만 다르다 — 동기 `advance_run`은 테스트가 계속 쓴다.
 
 
 @app.post("/approvals/{approval_id}/decision")

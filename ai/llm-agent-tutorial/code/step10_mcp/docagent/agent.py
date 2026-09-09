@@ -63,21 +63,17 @@ async def _default_chat_fn(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """``docagent/llm.py``는 3단계 버전을 그대로 가져온 동기 구현이라
-    ``achat``이 없다. ``run_in_executor``로 동기 ``chat()``을 이벤트 루프
-    밖(스레드)에서 돌려, 모델 서버 응답을 기다리는 동안 이 프로세스의
-    다른 비동기 작업(다른 요청의 MCP 호출 등)을 막지 않게 한다. PROJECT-SPEC.md
-    9절이 요구하는 "취소 가능한 진짜 비동기"는 아니다 — 그 요구사항을
-    만족하려면 ``docagent/llm.py``에 ``achat``을 추가해야 하는데, 이 장은
-    MCP 자체가 핵심이라 llm.py는 3단계 버전을 그대로 재사용했다. 이 절충을
-    장 본문 "검증 상태"에도 명시한다.
-    """
-    import asyncio
+    """``llm.achat()``을 쓰는 비동기 어댑터(PROJECT-SPEC.md 9절).
 
-    loop = asyncio.get_running_loop()
-    result = await loop.run_in_executor(
-        None, lambda: llm.chat(messages, settings=get_settings(), tools=tools)
-    )
+    클라이언트가 연결을 끊었을 때 모델 서버로 나가는 호출까지 실제로
+    취소하려면 이 호출이 ``await``할 수 있는 코루틴이어야 한다 —
+    ``AsyncOpenAI``로 연 연결을 이벤트 루프가 직접 닫을 수 있기 때문이다.
+    (이전 버전은 ``docagent/llm.py``에 ``achat``이 없어 동기 ``chat()``을
+    ``run_in_executor``로 스레드에서 돌렸다 — 조각을 받아오는 것은 됐지만
+    그 스레드를 밖에서 끊을 수 없어 취소가 반쪽이었다. 이제 ``achat``이
+    있으므로 이 절충이 더 필요 없다.)
+    """
+    result = await llm.achat(messages, settings=get_settings(), tools=tools)
     return {
         "role": "assistant",
         "content": result.text or None,

@@ -1,8 +1,31 @@
-# 13단계: 8단계(HITL)와 5단계(하이브리드 검색) 의존성을 합친 것뿐이다.
-# 이 장이 새로 추가하는 패키지는 없다 — CSV 생성은 표준 라이브러리 csv/io만 쓴다.
+# 13단계: 8단계(HITL)와 5단계(하이브리드 검색) 의존성에 더해, 최종 통합에서
+# MCP(10단계)·멀티에이전트/A2A(11단계)·트레이싱(9단계)을 이 장에 실제로
+# 배선하며 그 단계들의 의존성도 함께 가져왔다. 버전 범위는 PROJECT-SPEC.md
+# 10절 확인된 기준선을 그대로 쓴다.
 fastapi>=0.115,<1.0          # 서버, 라우팅, StreamingResponse
 uvicorn[standard]>=0.30,<1.0 # ASGI 서버
 pydantic>=2.7,<3             # 요청 검증, 도구 인자 스키마
-httpx>=0.28,<0.29            # 모델 서버(OpenAI 호환 REST) 호출 (llm.py)
+httpx>=0.28,<0.29            # 모델 서버(OpenAI 호환 REST) 호출 (llm.py), a2a_min/client.py
 python-dotenv>=1.0,<2        # .env 로딩
-pymilvus[milvus-lite]>=2.6,<3  # 5단계 하이브리드 검색 재사용 (rag/store.py, rag/search.py)
+pymilvus[milvus-lite]>=2.6,<3  # 5단계 하이브리드 검색 재사용 (rag/store.py, rag/search.py), mcp_server의 dense 검색
+
+# --- 이번 통합에서 새로 추가 -------------------------------------------------
+
+openai>=3.10,<4               # llm.py의 chat()/chat_json()(11단계 멀티에이전트가 쓰는 공통 인터페이스),
+                               # mcp_server/search.py의 임베딩 호출
+
+mcp[cli]>=2.0,<3               # 10단계 MCP 클라이언트(docagent/mcp_client.py) — 별도 프로세스인 mcp_server와 통신
+
+langgraph>=1.2,<2              # 11단계 슈퍼바이저 그래프(docagent/multiagent/graph_supervisor.py)
+
+# 9단계와 같은 이유로 상한을 둔다: Python 3.11에서 arize-phoenix 19.18.0 이상을
+# import하면 dataclass mutable-default 오류로 깨지는 것을 9단계에서 실제로
+# 재현해 확인했다(VERIFIED-FINDINGS.md에는 없고 code/step09_tracing_eval/
+# requirements.txt에 상세 기록이 있다). 이 장도 같은 Python 3.11 환경에서
+# 검증했으므로 같은 상한을 그대로 가져온다.
+arize-phoenix>=17,<19.18
+openinference-instrumentation-openai>=0.1.30,<0.2
+opentelemetry-api>=1.30,<2
+
+pytest>=8.0,<9                 # 단위 테스트
+pytest-asyncio>=0.24,<1        # docagent/mcp_client.py가 async def이므로 필요(10단계와 동일한 이유)

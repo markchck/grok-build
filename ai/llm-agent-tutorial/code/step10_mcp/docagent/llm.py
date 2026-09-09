@@ -27,6 +27,7 @@ from openai import (
     APIError,
     APIStatusError,
     APITimeoutError,
+    AsyncOpenAI,
     OpenAI,
 )
 
@@ -159,6 +160,65 @@ def chat_stream(
         raise LLMError(f"모델 서버 오류 응답: {exc.status_code} {exc.message}") from exc
     except APIError as exc:
         raise LLMError(f"모델 서버 호출 실패: {exc}") from exc
+
+
+def _async_client(settings: Settings) -> AsyncOpenAI:
+    return AsyncOpenAI(
+        base_url=settings.openai_base_url,
+        api_key=settings.openai_api_key,
+        timeout=settings.request_timeout_seconds,
+    )
+
+
+async def achat(
+    messages: list[dict[str, Any]],
+    *,
+    settings: Settings | None = None,
+    temperature: float = 0.2,
+    max_tokens: int = 1024,
+    tools: list[dict[str, Any]] | None = None,
+    response_format: dict[str, Any] | None = None,
+) -> ChatResult:
+    """``chat()``의 비동기 버전(PROJECT-SPEC.md 9절). ``docagent/agent.py``의
+    ``_default_chat_fn``이 쓴다 — 클라이언트가 연결을 끊었을 때 이 호출을
+    실제로 취소하려면 ``AsyncOpenAI``로 연 연결을 이벤트 루프가 직접 닫을 수
+    있어야 하기 때문이다. 이전에는 이 함수가 없어 ``run_in_executor``로 동기
+    ``chat()``을 스레드에서 돌렸다 — 조각을 받아오는 것은 됐지만 그 스레드를
+    밖에서 끊을 수 없어 취소가 반쪽이었다(agent.py의 예전 주석 참고)."""
+    settings = settings or get_settings()
+    client = _async_client(settings)
+    kwargs: dict[str, Any] = {
+        "model": settings.chat_model,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+    if tools:
+        kwargs["tools"] = tools
+        kwargs["tool_choice"] = "auto"
+    if response_format is not None:
+        kwargs["response_format"] = response_format
+
+    try:
+        completion = await client.chat.completions.create(**kwargs)
+    except APITimeoutError as exc:
+        raise LLMError(f"모델 서버 응답 시간 초과({settings.request_timeout_seconds}초)") from exc
+    except APIConnectionError as exc:
+        raise LLMError(f"모델 서버에 연결할 수 없다: {exc}") from exc
+    except APIStatusError as exc:
+        raise LLMError(f"모델 서버 오류 응답: {exc.status_code} {exc.message}") from exc
+    except APIError as exc:
+        raise LLMError(f"모델 서버 호출 실패: {exc}") from exc
+    finally:
+        await client.close()
+
+    choice = completion.choices[0]
+    return ChatResult(
+        text=choice.message.content or "",
+        finish_reason=choice.finish_reason,
+        tool_calls=_tool_calls_to_dicts(choice.message.tool_calls),
+        raw=completion.model_dump(),
+    )
 
 
 def chat_json(

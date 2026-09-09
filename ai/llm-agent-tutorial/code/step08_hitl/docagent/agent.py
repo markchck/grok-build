@@ -20,7 +20,7 @@ import hashlib
 import json
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterator
+from typing import Any, AsyncIterator, Awaitable, Callable, Iterator
 
 from docagent import llm, store
 from docagent.config import Settings, get_settings
@@ -69,6 +69,7 @@ class AgentEvent:
 
 
 ChatFn = Callable[..., dict[str, Any]]
+AsyncChatFn = Callable[..., Awaitable[dict[str, Any]]]
 
 
 # ---------------------------------------------------------------------------
@@ -480,6 +481,215 @@ def _run_loop(
                     },
                 )
                 return  # 여기서 스트림을 끝낸다. done 이벤트는 아직 내보내지 않는다.
+
+            idem_key = idempotency_key(run.run_id, call_id, name, args_dict)
+            result, cached = _execute_with_cache(conn, run, idem_key, name, args_dict)
+            run.messages.append(
+                {"role": "tool", "tool_call_id": call_id, "name": name, "content": result.content}
+            )
+            summary = ("(캐시됨) " if cached else "") + (
+                result.content if len(result.content) <= 200 else result.content[:200] + "..."
+            )
+            yield AgentEvent("tool_result", {"id": call_id, "ok": result.ok, "summary": summary})
+            _register_progress(run, name, args_dict, result)
+
+            if _no_progress_triggered(run):
+                store.save_run(conn, run)
+                yield _finish(conn, run, "no_progress")
+                return
+
+        store.save_run(conn, run)
+        # 도구 결과를 반영해서 다음 단계에서 모델을 다시 부른다.
+
+
+# ---------------------------------------------------------------------------
+# 비동기 버전 (PROJECT-SPEC.md 9절) — app.py가 쓴다
+# ---------------------------------------------------------------------------
+#
+# 아래 ``aadvance_run``/``_arun_loop``는 위 ``advance_run``/``_run_loop``와
+# 로직이 완전히 같다. 다른 점은 모델 호출을 ``await chat_fn(...)``으로 하는
+# 것뿐이다 — 이 ``await`` 지점이 있어야 클라이언트가 연결을 끊었을 때(이
+# 제너레이터를 도는 태스크가 취소될 때) 그 취소가 ``achat_completion_full``
+# 안의 취소 처리까지 전달되어 모델 서버로 나가는 HTTP 연결이 실제로 닫힌다.
+# ``_resolve_pending_approval``은 순수 상태 전이 로직(SQLite 읽기/쓰기)이라
+# 모델을 부르지 않는다 — 동기 버전을 그대로 수동으로 순회해서 쓴다(async
+# generator 안에서는 ``yield from``을 쓸 수 없다).
+
+
+async def aadvance_run(
+    conn,
+    run_id: str,
+    *,
+    chat_fn: AsyncChatFn = llm.achat_completion_full,
+    settings: Settings | None = None,
+    tool_names: list[str] | None = None,
+) -> AsyncIterator[AgentEvent]:
+    """``advance_run()``의 비동기 버전. app.py의 ``/chat``, ``/chat/resume``이 쓴다."""
+
+    settings = settings or get_settings()
+
+    if not store.try_acquire(conn, run_id):
+        yield AgentEvent(
+            "error", {"code": "run_busy", "message": "이 run은 이미 다른 요청이 처리하고 있다."}
+        )
+        return
+
+    try:
+        run = store.load_run(conn, run_id)
+        if run is None:
+            yield AgentEvent("error", {"code": "not_found", "message": f"run을 찾을 수 없다: {run_id}"})
+            return
+
+        if run.status == "done":
+            yield AgentEvent("done", {"finish_reason": run.finish_reason, "partial": _partial(run)})
+            return
+
+        if run.status == "paused_approval":
+            resolution_gen = _resolve_pending_approval(conn, run)
+            resolution = "continue"
+            try:
+                while True:
+                    event = next(resolution_gen)
+                    yield event
+            except StopIteration as stop:
+                resolution = stop.value
+            if resolution == "still_pending":
+                yield AgentEvent(
+                    "status", {"stage": "planning", "message": "아직 승인 결정이 내려지지 않았다. 대기한다."}
+                )
+                store.save_run(conn, run)
+                return
+            store.save_run(conn, run)
+            if resolution == "aborted":
+                yield AgentEvent("done", {"finish_reason": run.finish_reason, "partial": _partial(run)})
+                return
+            # resolution == "continue" -> 아래 루프로 이어진다.
+
+        async for event in _arun_loop(conn, run, chat_fn, settings, _select_tools(tool_names)):
+            yield event
+    finally:
+        store.release(conn, run_id)
+
+
+async def _arun_loop(
+    conn, run: store.RunState, chat_fn: AsyncChatFn, settings: Settings, tool_specs: list[dict[str, Any]]
+) -> AsyncIterator[AgentEvent]:
+    while True:
+        run.step += 1
+
+        if run.step > settings.max_agent_steps:
+            yield _finish(conn, run, "max_steps")
+            return
+
+        if time.time() - run.start_time > settings.max_agent_seconds:
+            yield _finish(conn, run, "timeout")
+            return
+
+        if run.usage_total > settings.max_agent_tokens:
+            yield _finish(conn, run, "token_budget")
+            return
+
+        yield AgentEvent("status", {"stage": "planning", "message": f"{run.step}단계: 모델에게 다음 행동을 묻는다"})
+
+        try:
+            response = await chat_fn(run.messages, tools=tool_specs, tool_choice="auto", settings=settings)
+        except llm.LLMError as exc:
+            yield AgentEvent("error", {"code": "llm_error", "message": str(exc)})
+            yield _finish(conn, run, "cancelled")
+            return
+
+        assistant_message = response["message"]
+        usage = response.get("usage") or {}
+        _accumulate_usage(run, usage, run.messages, assistant_message)
+        run.messages.append(assistant_message)
+        store.save_run(conn, run)
+
+        if run.usage_total > settings.max_agent_tokens:
+            yield _finish(conn, run, "token_budget")
+            return
+
+        tool_calls = assistant_message.get("tool_calls")
+        if not tool_calls:
+            final_text = assistant_message.get("content") or ""
+            run.final_text = final_text
+            yield AgentEvent("token", {"text": final_text})
+            yield _finish(conn, run, "stop")
+            return
+
+        yield AgentEvent("status", {"stage": "analyzing", "message": f"도구 {len(tool_calls)}건 실행 준비"})
+
+        for call in tool_calls:
+            call_id = call.get("id", "")
+            fn = call.get("function", {})
+            name = fn.get("name", "")
+            raw_arguments = fn.get("arguments", "{}")
+
+            try:
+                args_dict = json.loads(raw_arguments) if raw_arguments else {}
+            except json.JSONDecodeError:
+                args_dict = None
+
+            yield AgentEvent(
+                "tool_call", {"id": call_id, "name": name, "args": args_dict if args_dict is not None else {}}
+            )
+
+            if args_dict is None:
+                error_content = json.dumps(
+                    {"error": "invalid_json", "message": "arguments가 올바른 JSON이 아니다."}, ensure_ascii=False
+                )
+                run.messages.append(
+                    {"role": "tool", "tool_call_id": call_id, "name": name, "content": error_content}
+                )
+                yield AgentEvent("tool_result", {"id": call_id, "ok": False, "summary": "잘못된 JSON 인자"})
+                continue
+
+            key_str = f"{name}|{_normalize_args(args_dict)}"
+            run.call_counts[key_str] = run.call_counts.get(key_str, 0) + 1
+
+            if run.call_counts[key_str] > REPEAT_LIMIT:
+                yield AgentEvent(
+                    "tool_result", {"id": call_id, "ok": False, "summary": "같은 도구·인자 반복 호출 감지"}
+                )
+                store.save_run(conn, run)
+                yield _finish(conn, run, "repeated_tool_call")
+                return
+
+            if name in APPROVAL_REQUIRED_TOOLS:
+                idem_key = idempotency_key(run.run_id, call_id, name, args_dict)
+                cached = store.cache_get(conn, idem_key)
+                if cached is not None:
+                    result = ToolRunResult(ok=bool(cached["result_ok"]), content=cached["result_content"])
+                    run.messages.append(
+                        {"role": "tool", "tool_call_id": call_id, "name": name, "content": result.content}
+                    )
+                    yield AgentEvent(
+                        "tool_result", {"id": call_id, "ok": result.ok, "summary": "(캐시됨) 이미 승인·실행된 호출"}
+                    )
+                    _register_progress(run, name, args_dict, result)
+                    continue
+
+                approval_id = store.create_approval(
+                    conn,
+                    run_id=run.run_id,
+                    call_id=call_id,
+                    tool_name=name,
+                    args=args_dict,
+                    reason=f"'{name}'은(는) 되돌리기 어려운 작업이라 실행 전 승인이 필요하다.",
+                    idempotency_key=idem_key,
+                )
+                run.status = "paused_approval"
+                run.pending_approval_id = approval_id
+                store.save_run(conn, run)
+                yield AgentEvent(
+                    "approval_request",
+                    {
+                        "id": approval_id,
+                        "action": name,
+                        "args": args_dict,
+                        "reason": f"'{name}'은(는) 되돌리기 어려운 작업이라 실행 전 승인이 필요하다.",
+                    },
+                )
+                return
 
             idem_key = idempotency_key(run.run_id, call_id, name, args_dict)
             result, cached = _execute_with_cache(conn, run, idem_key, name, args_dict)

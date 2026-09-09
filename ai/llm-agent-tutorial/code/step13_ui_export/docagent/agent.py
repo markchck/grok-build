@@ -26,10 +26,18 @@ import time
 from dataclasses import asdict
 from typing import Any, Callable, Iterator
 
-from docagent import llm, store
+from docagent import llm, mcp_runtime, skills_runtime, store, tracing
 from docagent.config import Settings, get_settings
+from docagent.mcp_client import McpConnectionError
 from docagent.rag import citations
 from docagent.rag.search import hybrid_search
+from docagent.skills_runtime import (
+    SKILL_TOOL_NAMES,
+    SKILL_TOOL_SPECS,
+    SkillRunError,
+    run_csv_analysis_skill,
+    run_doc_research_skill,
+)
 from docagent.todo import TodoIdAssigner
 from docagent.tools import (
     APPROVAL_REQUIRED_TOOLS,
@@ -39,6 +47,34 @@ from docagent.tools import (
     run_tool,
     validate_args,
 )
+
+# MCP(10단계) 도구 하나를 이 루프에 추가로 노출한다. mcp_server의 search_docs를
+# 그대로 부르되, 로컬 hybrid_search_docs(Dense+Sparse, 이 프로세스 안에서 Milvus를
+# 직접 부른다)와 이름이 겹치지 않도록 "mcp_" 접두사를 붙였다 — 도구 이름만 보고도
+# 로컬 Tool과 MCP 도구를 구분할 수 있게 하기 위한 이 장의 관례다(실제 구분은
+# tool_call 이벤트의 source 필드가 한다, docagent/events.py 참고).
+MCP_SEARCH_TOOL_NAME = "mcp_search_docs"
+
+_MCP_SEARCH_TOOL_SPEC: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": MCP_SEARCH_TOOL_NAME,
+        "description": (
+            "(MCP: 별도 프로세스 mcp_server) 사내 분기 리포트 문서에서 Dense(의미) 검색으로 "
+            "근거를 찾는다. hybrid_search_docs와 달리 이 도구는 완전히 별도의 프로세스에서 "
+            "실행되고 stdio로 통신한다(10단계)."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "검색 질의."},
+                "top_k": {"type": "integer", "minimum": 1, "maximum": 10},
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+    },
+}
 
 SYSTEM_PROMPT = (
     "너는 문서와 판매 데이터를 분석하는 에이전트다. 먼저 write_plan으로 실행 계획을 "
@@ -57,14 +93,63 @@ CHARS_PER_TOKEN_ESTIMATE = 4
 _TOOL_SPECS_BY_NAME = {spec["function"]["name"]: spec for spec in TOOL_SPECS}
 
 
-def _select_tools(tool_names: list[str] | None) -> list[dict[str, Any]]:
-    """8단계와 같은 데모 전용 장치. 스텁 서버가 tools의 첫 항목을 항상 고르는 것을
-    이용해, 실제 모델 없이도 특정 도구 흐름(승인/검색/실패)을 재현한다."""
+def _tool_source(name: str) -> str:
+    """도구 이름 -> 이 도구가 어디서 오는가. tool_call 이벤트의 source 필드에 그대로
+    실린다(events.py, PROJECT-SPEC.md 4절). Tool·MCP·Skill 세 층을 화면에서
+    구분하는 지점이 바로 여기다."""
 
+    if name == MCP_SEARCH_TOOL_NAME:
+        return "mcp"
+    if name in SKILL_TOOL_NAMES:
+        return "skill"
+    return "local"
+
+
+def _select_tools(
+    tool_names: list[str] | None,
+    *,
+    include_mcp: bool = False,
+    include_skills: bool = False,
+    settings: Settings | None = None,
+) -> list[dict[str, Any]]:
+    """8단계와 같은 데모 전용 장치. 스텁 서버가 tools의 첫 항목을 항상 고르는 것을
+    이용해, 실제 모델 없이도 특정 도구 흐름(승인/검색/실패)을 재현한다.
+
+    ``include_mcp``/``include_skills``가 참이면 로컬 Tool 목록에 MCP 도구·Skill
+    도구를 **더한다**(대체하지 않는다) — 최종 통합 과제 4번이 요구하는 "같은
+    에이전트 루프 안에서 공존"이 바로 이것이다. 두 값 모두 기본값이 거짓인
+    이유: MCP는 별도 프로세스를 실제로 띄워야 하고(연결 실패 시 도구 목록 조회
+    자체가 실패할 수 있다, ``mcp_runtime.list_mcp_tool_specs_sync`` 참고), 이
+    장의 기존 테스트(반복 감지·no_progress 등)는 도구 목록이 정확히 몇 개인지에
+    기대는 경우가 있어 기본 동작을 그대로 유지해야 하기 때문이다.
+    """
+
+    base = TOOL_SPECS
     if not tool_names:
-        return TOOL_SPECS
-    selected = [_TOOL_SPECS_BY_NAME[name] for name in tool_names if name in _TOOL_SPECS_BY_NAME]
-    return selected or TOOL_SPECS
+        selected = list(base)
+    else:
+        selected = [_TOOL_SPECS_BY_NAME[name] for name in tool_names if name in _TOOL_SPECS_BY_NAME]
+        if not selected:
+            selected = list(base)
+
+    if include_mcp:
+        settings = settings or get_settings()
+        discovered = mcp_runtime.list_mcp_tool_specs_sync(settings)
+        discovered_names = {spec["function"]["name"] for spec in discovered}
+        if "search_docs" in discovered_names:
+            # 서버가 실제로 응답했다 — 그 스키마를 그대로 쓰되 이름만 로컬 도구와
+            # 겹치지 않게 바꾼다(모델에게는 항상 mcp_search_docs로 보인다).
+            selected = selected + [_MCP_SEARCH_TOOL_SPEC]
+        elif not discovered:
+            # 서버가 지금 응답하지 않는다 — 그래도 도구 자체는 목록에 올려 둔다.
+            # 실제 호출 시점에 tool_result(ok=False)로 실패 원인이 드러나고,
+            # 트레이싱을 켜 두면 그 실패가 스팬으로 남는다(9단계 배선, 6-4절 참고).
+            selected = selected + [_MCP_SEARCH_TOOL_SPEC]
+
+    if include_skills:
+        selected = selected + list(SKILL_TOOL_SPECS)
+
+    return selected
 
 
 class AgentEvent:
@@ -294,6 +379,8 @@ def advance_run(
     chat_fn: ChatFn = llm.chat_completion_full,
     settings: Settings | None = None,
     tool_names: list[str] | None = None,
+    include_mcp: bool = False,
+    include_skills: bool = False,
 ) -> Iterator[AgentEvent]:
     settings = settings or get_settings()
 
@@ -327,7 +414,10 @@ def advance_run(
                 yield AgentEvent("done", {"finish_reason": run.finish_reason, "partial": _partial(run)})
                 return
 
-        yield from _run_loop(conn, run, chat_fn, settings, _select_tools(tool_names))
+        tool_specs = _select_tools(
+            tool_names, include_mcp=include_mcp, include_skills=include_skills, settings=settings
+        )
+        yield from _run_loop(conn, run, chat_fn, settings, tool_specs)
     finally:
         store.release(conn, run_id)
 
@@ -388,6 +478,85 @@ def _handle_hybrid_search(run: store.RunState, args_dict: dict[str, Any], settin
     return True, json.dumps({"results": payload}, ensure_ascii=False)
 
 
+def _handle_mcp_search(run: store.RunState, args_dict: dict[str, Any], settings: Settings) -> tuple[bool, str]:
+    """MCP(10단계) 서버의 search_docs를 호출한다. run.sources도 갱신해 인용 검증의
+    근거로 쓴다 — 로컬 hybrid_search_docs와 같은 규약(5단계: 모델이 만든 URL은
+    신뢰하지 않는다)을 MCP 결과에도 그대로 적용한다."""
+
+    query = args_dict.get("query", "")
+    top_k = int(args_dict.get("top_k", 5))
+    with tracing.traced_span(
+        "mcp.search_docs",
+        kind=tracing.SpanKind.RETRIEVER,
+        input_value=query,
+        attributes={"mcp.tool_name": "search_docs", "mcp.top_k": top_k},
+    ) as span:
+        try:
+            result = mcp_runtime.call_mcp_tool_sync(
+                "search_docs", {"query": query, "top_k": top_k}, settings
+            )
+        except McpConnectionError as exc:
+            tracing.mark_error(span, "mcp_connection_error", str(exc))
+            return False, json.dumps({"error": "mcp_connection_error", "message": str(exc)}, ensure_ascii=False)
+
+        if not result.ok:
+            tracing.mark_error(span, "mcp_tool_error", result.content)
+            return False, result.content
+
+        try:
+            parsed = json.loads(result.content)
+        except json.JSONDecodeError:
+            tracing.set_output(span, result.content[:500])
+            return True, result.content
+
+        hits = parsed.get("hits", [])
+        tracing.set_retrieval_documents(span, hits)
+        offset = len(run.sources)
+        new_sources = []
+        for i, hit in enumerate(hits):
+            source = citations.RetrievedSource(
+                label=citations.make_source_label(offset + i),
+                chunk_id=hit.get("pk", f"mcp#{i}"),
+                doc_id=hit.get("doc_id", ""),
+                doc_title=hit.get("doc_title", hit.get("doc_id", "")),
+                page=int(hit.get("page", 0)),
+                chunk_index=int(hit.get("chunk_index", 0)),
+                text=hit.get("text", ""),
+                source_url=hit.get("source_url", ""),
+                score=float(hit.get("score", 0.0)),
+            )
+            new_sources.append(source)
+        run.sources.extend(asdict(s) for s in new_sources)
+
+        payload = [{"label": s.label, "doc": s.doc_title, "snippet": s.text[:200]} for s in new_sources]
+        content = json.dumps({"results": payload}, ensure_ascii=False)
+        tracing.set_output(span, content[:500])
+        return True, content
+
+
+def _handle_skill(name: str, args_dict: dict[str, Any]) -> tuple[bool, str]:
+    """Skill(12단계 skills/) 실행. 스킬 스크립트 실패는 도구 실패로 취급한다(3단계와
+    같은 원칙) — 스크립트가 죽었다고 애플리케이션 전체가 죽지 않는다."""
+
+    with tracing.traced_span(
+        f"skill.{name}", kind=tracing.SpanKind.CHAIN, input_value=json.dumps(args_dict, ensure_ascii=False)
+    ) as span:
+        try:
+            if name == "csv_analysis_skill":
+                output = run_csv_analysis_skill()
+            elif name == "doc_research_skill":
+                output = run_doc_research_skill(args_dict.get("keywords", []))
+            else:
+                return False, json.dumps({"error": "unknown_skill", "message": name}, ensure_ascii=False)
+        except SkillRunError as exc:
+            tracing.mark_error(span, "skill_run_error", str(exc))
+            return False, json.dumps({"error": "skill_run_error", "message": str(exc)}, ensure_ascii=False)
+
+        content = json.dumps(output, ensure_ascii=False)
+        tracing.set_output(span, content[:500])
+        return True, content
+
+
 def _run_loop(
     conn, run: store.RunState, chat_fn: ChatFn, settings: Settings, tool_specs: list[dict[str, Any]]
 ) -> Iterator[AgentEvent]:
@@ -408,12 +577,29 @@ def _run_loop(
 
         yield AgentEvent("status", {"stage": "planning", "message": f"{run.step}단계: 모델에게 다음 행동을 묻는다"})
 
-        try:
-            response = chat_fn(run.messages, tools=tool_specs, tool_choice="auto", settings=settings)
-        except llm.LLMError as exc:
-            yield AgentEvent("error", {"code": "llm_error", "message": str(exc)})
-            yield _finish(conn, run, "cancelled")
-            return
+        with tracing.traced_span(
+            "docagent.chat",
+            kind=tracing.SpanKind.LLM,
+            input_value=json.dumps(run.messages[-1:], ensure_ascii=False),
+            attributes={"docagent.run_id": run.run_id, "docagent.step": run.step},
+        ) as llm_span:
+            try:
+                response = chat_fn(run.messages, tools=tool_specs, tool_choice="auto", settings=settings)
+            except llm.LLMError as exc:
+                tracing.mark_error(llm_span, "llm_error", str(exc))
+                yield AgentEvent("error", {"code": "llm_error", "message": str(exc)})
+                yield _finish(conn, run, "cancelled")
+                return
+
+            usage_for_span = response.get("usage") or {}
+            tracing.set_llm_usage(
+                llm_span,
+                model=settings.chat_model,
+                prompt_tokens=usage_for_span.get("prompt_tokens"),
+                completion_tokens=usage_for_span.get("completion_tokens"),
+                total_tokens=usage_for_span.get("total_tokens"),
+            )
+            tracing.set_output(llm_span, json.dumps(response.get("message", {}), ensure_ascii=False)[:500])
 
         assistant_message = response["message"]
         usage = response.get("usage") or {}
@@ -454,7 +640,13 @@ def _run_loop(
                 args_dict = None
 
             yield AgentEvent(
-                "tool_call", {"id": call_id, "name": name, "args": args_dict if args_dict is not None else {}}
+                "tool_call",
+                {
+                    "id": call_id,
+                    "name": name,
+                    "args": args_dict if args_dict is not None else {},
+                    "source": _tool_source(name),
+                },
             )
 
             if args_dict is None:
@@ -497,6 +689,40 @@ def _run_loop(
             if name == "hybrid_search_docs":
                 yield AgentEvent("status", {"stage": "retrieving", "message": f"'{args_dict.get('query','')}' 하이브리드 검색"})
                 ok, content = _handle_hybrid_search(run, args_dict, settings)
+                run.messages.append({"role": "tool", "tool_call_id": call_id, "name": name, "content": content})
+                summary = content if len(content) <= 200 else content[:200] + "..."
+                yield AgentEvent("tool_result", {"id": call_id, "ok": ok, "summary": summary})
+                if not ok:
+                    assigner = TodoIdAssigner.from_state(run.todo_state)
+                    assigner.mark_running_failed()
+                    todo_evt = _emit_todo_if_changed(run, assigner)
+                    if todo_evt:
+                        yield todo_evt
+                store.save_run(conn, run)
+                continue
+
+            # --- mcp_search_docs: 10단계 MCP 서버(별도 프로세스) 도구 ----------
+            if name == MCP_SEARCH_TOOL_NAME:
+                yield AgentEvent(
+                    "status", {"stage": "retrieving", "message": f"'{args_dict.get('query','')}' MCP 문서 검색"}
+                )
+                ok, content = _handle_mcp_search(run, args_dict, settings)
+                run.messages.append({"role": "tool", "tool_call_id": call_id, "name": name, "content": content})
+                summary = content if len(content) <= 200 else content[:200] + "..."
+                yield AgentEvent("tool_result", {"id": call_id, "ok": ok, "summary": summary})
+                if not ok:
+                    assigner = TodoIdAssigner.from_state(run.todo_state)
+                    assigner.mark_running_failed()
+                    todo_evt = _emit_todo_if_changed(run, assigner)
+                    if todo_evt:
+                        yield todo_evt
+                store.save_run(conn, run)
+                continue
+
+            # --- csv_analysis_skill / doc_research_skill: 12단계 Skill --------
+            if name in SKILL_TOOL_NAMES:
+                yield AgentEvent("status", {"stage": "analyzing", "message": f"Skill 실행: {name}"})
+                ok, content = _handle_skill(name, args_dict)
                 run.messages.append({"role": "tool", "tool_call_id": call_id, "name": name, "content": content})
                 summary = content if len(content) <= 200 else content[:200] + "..."
                 yield AgentEvent("tool_result", {"id": call_id, "ok": ok, "summary": summary})

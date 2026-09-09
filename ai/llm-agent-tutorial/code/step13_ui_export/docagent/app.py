@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import html
 import sqlite3
 from pathlib import Path
@@ -24,13 +25,29 @@ from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from docagent import events, store
+from docagent import events, store, tracing
 from docagent.agent import advance_run, start_run
 from docagent.config import get_settings
 from docagent.csv_export import build_analysis_csv, content_disposition
+from docagent.multiagent.agents import AgentDeps
+from docagent.multiagent.graph_supervisor import build_supervisor_graph, initial_state
 from docagent.rag.store import get_client, make_chunk_id
 
 app = FastAPI(title="docagent step13 - ui and export")
+
+
+@app.on_event("startup")
+def _startup_init_tracing() -> None:
+    """9단계 트레이싱을 이 장의 앱 시작 시점에 켠다(설정이 켜져 있을 때만).
+
+    ``DOCAGENT_TRACING_ENABLED=false``(기본값)면 ``init_tracing``이 아무 것도
+    하지 않는다 — OpenTelemetry API는 TracerProvider가 없으면 NoOp 스팬을
+    돌려주므로, agent.py의 ``traced_span`` 호출은 트레이싱을 껐을 때도 안전하게
+    아무 일도 하지 않는다(9단계에서 이미 확인한 사실, docagent/tracing.py
+    모듈 docstring 참고).
+    """
+
+    tracing.init_tracing(get_settings())
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 STATIC_DIR = BASE_DIR / "static"
@@ -53,10 +70,17 @@ class ChatRequest(BaseModel):
     # 데모 전용: 이 장의 스텁 서버(fake_openai_server.py)가 tools의 첫 항목을
     # 항상 고르는 성질을 이용해 특정 흐름을 재현할 때만 쓴다.
     tool_names: list[str] | None = None
+    # 최종 통합: MCP(10단계)·Skill(12단계) 도구를 이번 run의 도구 목록에 더할지.
+    # 기본값 False — MCP는 별도 프로세스가 실제로 떠 있어야 하고, 기존 테스트가
+    # 도구 목록 개수에 기대는 경우가 있어 기존 동작을 그대로 유지한다.
+    include_mcp: bool = False
+    include_skills: bool = False
 
 
 class ResumeRequest(BaseModel):
     tool_names: list[str] | None = None
+    include_mcp: bool = False
+    include_skills: bool = False
 
 
 class DecisionRequest(BaseModel):
@@ -70,7 +94,7 @@ def _render_event(kind: str, data: dict) -> str:
     if kind == "status":
         return events.status_event(data["stage"], data["message"])
     if kind == "tool_call":
-        return events.tool_call_event(data["id"], data["name"], data["args"])
+        return events.tool_call_event(data["id"], data["name"], data["args"], data.get("source", "local"))
     if kind == "tool_result":
         return events.tool_result_event(data["id"], data["ok"], data["summary"])
     if kind == "approval_request":
@@ -94,7 +118,13 @@ def chat(req: ChatRequest) -> StreamingResponse:
     run_id = start_run(conn, req.message)
 
     def event_stream():
-        for agent_event in advance_run(conn, run_id, tool_names=req.tool_names):
+        for agent_event in advance_run(
+            conn,
+            run_id,
+            tool_names=req.tool_names,
+            include_mcp=req.include_mcp,
+            include_skills=req.include_skills,
+        ):
             yield _render_event(agent_event.kind, agent_event.data)
 
     return StreamingResponse(
@@ -111,7 +141,13 @@ def resume(run_id: str, req: ResumeRequest = ResumeRequest()) -> StreamingRespon
         raise HTTPException(status_code=404, detail=f"run을 찾을 수 없다: {run_id}")
 
     def event_stream():
-        for agent_event in advance_run(conn, run_id, tool_names=req.tool_names):
+        for agent_event in advance_run(
+            conn,
+            run_id,
+            tool_names=req.tool_names,
+            include_mcp=req.include_mcp,
+            include_skills=req.include_skills,
+        ):
             yield _render_event(agent_event.kind, agent_event.data)
 
     return StreamingResponse(
@@ -259,6 +295,72 @@ async def view_source(doc_id: str, page: int = 0, chunk: int = 0) -> HTMLRespons
 @app.get("/", response_class=HTMLResponse)
 async def index() -> HTMLResponse:
     return HTMLResponse((STATIC_DIR / "index.html").read_text(encoding="utf-8"))
+
+
+# ---------------------------------------------------------------------------
+# 멀티에이전트 협업(11단계) + A2A 최소 흉내 — 최종 통합 과제 5·6번.
+# ---------------------------------------------------------------------------
+
+
+class CollabRequest(BaseModel):
+    message: str
+    # False(기본값): 검증(verifier)을 같은 프로세스 안에서 파이썬 함수로 부른다
+    #   (내부 멀티에이전트 협업).
+    # True: 검증을 별도 프로세스(a2a_min/server.py, A2A_VERIFIER_URL)에 HTTP로
+    #   위임한다 — 이 서버는 A2A 프로토콜 구현이 아니라 그 개념의 "최소 흉내"다
+    #   (docagent/a2a_min/server.py 모듈 docstring, docs/13-ui-and-export.md
+    #   2절 참고). 두 경로가 같은 그래프 구조 위에서 이 필드 하나로만 갈린다는
+    #   것이 "내부 협업과 A2A 연결의 구분"을 코드로 보여주는 지점이다.
+    external_verifier: bool = False
+
+
+def _run_supervisor_sync(message: str, external_verifier: bool) -> dict[str, Any]:
+    settings = get_settings()
+    deps = AgentDeps(settings=settings)
+    with tracing.traced_span(
+        "docagent.collab.supervisor",
+        kind=tracing.SpanKind.CHAIN,
+        input_value=message,
+        attributes={"collab.external_verifier": external_verifier},
+    ) as span:
+        graph = build_supervisor_graph(deps, external_verifier=external_verifier)
+        state = initial_state(message)
+        result = graph.invoke(state, config={"recursion_limit": 50})
+        tracing.set_output(span, result.get("final_text", "")[:500])
+        if result.get("finish_reason") not in (None, "stop"):
+            tracing.mark_error(span, str(result.get("finish_reason")), "협업이 정상 종료(stop)가 아닌 사유로 끝났다")
+        return result
+
+
+@app.post("/collab/supervisor")
+async def collab_supervisor(req: CollabRequest) -> StreamingResponse:
+    """조사(investigator)·분석(analyst)·검증(verifier) 세 에이전트의 위임과
+    결과 통합(11단계 슈퍼바이저 그래프)을 SSE로 관찰한다. ``external_verifier``
+    로 검증을 내부 호출과 A2A 최소 흉내 서버 중 어느 쪽으로 보낼지 고른다."""
+
+    async def event_stream():
+        try:
+            result = await asyncio.to_thread(_run_supervisor_sync, req.message, req.external_verifier)
+        except Exception as exc:  # noqa: BLE001 - 그래프 실행 실패를 error 이벤트로 알린다
+            yield events.error_event("collab_failed", str(exc))
+            yield events.done_event("cancelled")
+            return
+
+        for entry in result["trace"]:
+            yield events.status_event(entry["stage"], entry["message"])
+        finish_reason = result.get("finish_reason") or "stop"
+        yield events.done_event(
+            finish_reason,
+            partial={
+                "text": result.get("final_text", ""),
+                "steps_used": result.get("hops_used", 0),
+                "tokens_used": result.get("tokens_used", 0),
+                "tokens_estimated": result.get("tokens_estimated", False),
+                "csv_available": False,
+            },
+        )
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 @app.get("/healthz")

@@ -17,18 +17,22 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import sqlite3
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from docagent import events, store
-from docagent.agent import advance_run, start_run
+from docagent.agent import aadvance_run, start_run
 from docagent.config import get_settings
+
+logger = logging.getLogger("docagent.app")
 
 app = FastAPI(title="docagent step08 - human in the loop")
 
@@ -90,26 +94,40 @@ def _render_event(kind: str, data: dict) -> str:
 
 
 @app.post("/chat")
-def chat(req: ChatRequest) -> StreamingResponse:
+async def chat(req: ChatRequest, request: Request) -> StreamingResponse:
     conn = get_conn()
     run_id = start_run(conn, req.message)
 
-    def event_stream():
-        for agent_event in advance_run(conn, run_id, tool_names=req.tool_names):
-            yield _render_event(agent_event.kind, agent_event.data)
+    async def event_stream():
+        try:
+            async for agent_event in aadvance_run(conn, run_id, tool_names=req.tool_names):
+                if await request.is_disconnected():
+                    logger.info("client disconnected mid-stream run_id=%s", run_id)
+                    return
+                yield _render_event(agent_event.kind, agent_event.data)
+        except asyncio.CancelledError:
+            logger.info("stream task cancelled run_id=%s", run_id)
+            raise
 
     return StreamingResponse(event_stream(), media_type="text/event-stream", headers={"X-Run-Id": run_id})
 
 
 @app.post("/chat/resume/{run_id}")
-def resume(run_id: str, req: ResumeRequest = ResumeRequest()) -> StreamingResponse:
+async def resume(run_id: str, request: Request, req: ResumeRequest = ResumeRequest()) -> StreamingResponse:
     conn = get_conn()
     if store.load_run(conn, run_id) is None:
         raise HTTPException(status_code=404, detail=f"run을 찾을 수 없다: {run_id}")
 
-    def event_stream():
-        for agent_event in advance_run(conn, run_id, tool_names=req.tool_names):
-            yield _render_event(agent_event.kind, agent_event.data)
+    async def event_stream():
+        try:
+            async for agent_event in aadvance_run(conn, run_id, tool_names=req.tool_names):
+                if await request.is_disconnected():
+                    logger.info("client disconnected mid-stream run_id=%s", run_id)
+                    return
+                yield _render_event(agent_event.kind, agent_event.data)
+        except asyncio.CancelledError:
+            logger.info("stream task cancelled run_id=%s", run_id)
+            raise
 
     return StreamingResponse(event_stream(), media_type="text/event-stream", headers={"X-Run-Id": run_id})
 

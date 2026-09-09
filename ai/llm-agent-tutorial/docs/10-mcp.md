@@ -854,13 +854,13 @@ Resources/Prompts 세 원시 개념의 존재는 SDK의 실제 타입(`ClientSes
 > Lite(dense 전용 스키마)에 문서를 적재한 프로세스와 **다른 프로세스**(별도로
 > 띄운 MCP 서버)에서 검색이 성공하는 것도 확인했다.
 >
-> `docagent/llm.py`는 3단계 버전을 그대로 가져왔고, 3~9단계 코드베이스 전체가
-> 그렇듯 PROJECT-SPEC.md 9절이 요구하는 `achat`/`achat_stream`을 아직 구현하지
-> 않았다(3단계 이후 이어진 기존 차이이지 이 장에서 새로 생긴 차이가 아니다).
-> 그래서 `docagent/agent.py`의 `_default_chat_fn`은 동기 `chat()`을
-> `run_in_executor`로 별도 스레드에서 돌린다 — 다른 비동기 작업(동시 요청의
-> MCP 호출 등)을 막지는 않지만, PROJECT-SPEC.md가 요구하는 "모델 서버 호출까지
-> 실제로 취소 가능한" 수준은 아니다.
+> `docagent/llm.py`는 3단계 버전에 `achat`을 더한 것이다(PROJECT-SPEC.md 9절).
+> `docagent/agent.py`의 `_default_chat_fn`은 `run_in_executor`로 동기 `chat()`을
+> 스레드에서 돌리던 이전 절충을 버리고 `await llm.achat(...)`을 직접 쓴다 —
+> 클라이언트가 연결을 끊었을 때 모델 서버로 나가는 HTTP 연결까지 실제로
+> 닫히는 것을 스텁 서버를 상대로 TCP 연결 상태(`ESTABLISHED` → `CLOSE_WAIT`)로
+> 확인했다. 이 장은 스트리밍 답변을 다루지 않으므로 `achat_stream`은 여전히
+> 만들지 않는다.
 >
 > streamable-http(HTTP 기반) 전송은 최소 구성(도구 하나, 인증 없음)으로 서버를
 > 띄우고 클라이언트로 연결·호출까지 별도로 확인했지만, 이 장의 누적 프로젝트

@@ -39,7 +39,7 @@ from pydantic import BaseModel
 
 from docagent.config import get_settings
 from docagent.events import done_event, error_event, sources_event, status_event, token_event
-from docagent.llm import LLMError, chat
+from docagent.llm import LLMError, achat
 from docagent.middleware import RequestContextMiddleware
 from docagent.rag import citations
 from docagent.rag.search import dense_search, hybrid_search, sparse_search
@@ -173,7 +173,11 @@ async def _chat_stream_body(req: ChatRequest, root_span) -> AsyncIterator[str]:
     ]
 
     try:
-        result = chat(messages, settings=get_settings())
+        # achat()(동기 chat()이 아니라)을 쓰는 이유는 PROJECT-SPEC.md 9절의
+        # 취소 요구사항이다: 클라이언트가 연결을 끊으면 이 코루틴을 기다리는
+        # 태스크가 취소되고, 그 취소가 achat 안의 finally까지 전달되어 모델
+        # 서버로 나가는 HTTP 연결이 실제로 닫힌다.
+        result = await achat(messages, settings=get_settings())
     except LLMError as exc:
         mark_error(root_span, "llm_call_failed", str(exc))
         yield error_event("llm_call_failed", str(exc))

@@ -20,7 +20,7 @@ PROJECT-SPEC.md 9절이 고정한 공통 인터페이스(``chat`` / ``chat_strea
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -29,6 +29,7 @@ from openai import (
     APIError,
     APIStatusError,
     APITimeoutError,
+    AsyncOpenAI,
     OpenAI,
 )
 
@@ -137,6 +138,109 @@ def chat_stream(
         raise LLMError(f"모델 서버 오류 응답: {exc.status_code} {exc.message}") from exc
     except APIError as exc:
         raise LLMError(f"모델 서버 호출 실패: {exc}") from exc
+
+
+def _async_client(settings: Settings) -> AsyncOpenAI:
+    return AsyncOpenAI(
+        base_url=settings.openai_base_url,
+        api_key=settings.openai_api_key,
+        timeout=settings.request_timeout_seconds,
+    )
+
+
+async def achat(
+    messages: list[dict[str, Any]],
+    *,
+    settings: Settings | None = None,
+    temperature: float = 0.2,
+    max_tokens: int = 1024,
+    tools: list[dict[str, Any]] | None = None,
+    response_format: dict[str, Any] | None = None,
+) -> ChatResult:
+    """``chat()``의 비동기 버전(PROJECT-SPEC.md 9절 인터페이스 일관성).
+
+    **app.py는 이 함수를 쓰지 않는다.** Deep Agents는 LangGraph 그래프이고,
+    ``app.py``는 ``agent.astream(...)``으로 그래프를 직접 돈다(app.py 상단
+    설명 참고) — 취소는 그 경로에서 이미 이뤄진다. 이 함수는 이 모듈이
+    9절의 인터페이스(``chat``/``achat``/...)를 다른 단계와 동일하게 갖추기
+    위한 것으로, 테스트나 향후 비-LangChain 경로에서 쓸 수 있다."""
+    settings = settings or get_settings()
+    client = _async_client(settings)
+    kwargs: dict[str, Any] = {
+        "model": settings.chat_model,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+    if tools:
+        kwargs["tools"] = tools
+        kwargs["tool_choice"] = "auto"
+    if response_format is not None:
+        kwargs["response_format"] = response_format
+
+    try:
+        completion = await client.chat.completions.create(**kwargs)
+    except APITimeoutError as exc:
+        raise LLMError(f"모델 서버 응답 시간 초과({settings.request_timeout_seconds}초)") from exc
+    except APIConnectionError as exc:
+        raise LLMError(f"모델 서버에 연결할 수 없다: {exc}") from exc
+    except APIStatusError as exc:
+        raise LLMError(f"모델 서버 오류 응답: {exc.status_code} {exc.message}") from exc
+    except APIError as exc:
+        raise LLMError(f"모델 서버 호출 실패: {exc}") from exc
+    finally:
+        await client.close()
+
+    choice = completion.choices[0]
+    return ChatResult(
+        text=choice.message.content or "",
+        finish_reason=choice.finish_reason,
+        tool_calls=[],
+        raw=completion.model_dump(),
+    )
+
+
+async def achat_stream(
+    messages: list[dict[str, Any]],
+    *,
+    settings: Settings | None = None,
+    temperature: float = 0.2,
+    max_tokens: int = 1024,
+) -> AsyncIterator[str]:
+    """``chat_stream()``의 비동기 버전(PROJECT-SPEC.md 9절 인터페이스 일관성).
+
+    **app.py는 이 함수도 쓰지 않는다** — 위 ``achat`` 설명과 같은 이유다."""
+    settings = settings or get_settings()
+    client = _async_client(settings)
+    try:
+        stream = await client.chat.completions.create(
+            model=settings.chat_model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stream=True,
+        )
+    except APITimeoutError as exc:
+        raise LLMError(f"모델 서버 응답 시간 초과({settings.request_timeout_seconds}초)") from exc
+    except APIConnectionError as exc:
+        raise LLMError(f"모델 서버에 연결할 수 없다: {exc}") from exc
+    except APIStatusError as exc:
+        raise LLMError(f"모델 서버 오류 응답: {exc.status_code} {exc.message}") from exc
+    except APIError as exc:
+        raise LLMError(f"모델 서버 호출 실패: {exc}") from exc
+
+    try:
+        async for chunk in stream:
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            if delta is not None and delta.content:
+                yield delta.content
+    except APIError as exc:
+        raise LLMError(f"스트리밍 중 오류가 발생했다: {exc}") from exc
+    finally:
+        await stream.close()
+        await client.close()
 
 
 def chat_json(

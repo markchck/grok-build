@@ -126,7 +126,7 @@ DOCAGENT_MCP_SALES_CSV=./data/sales.csv
 | --- | --- | --- |
 | `token` | `{"text": "..."}` | 모델 답변 조각 |
 | `status` | `{"stage": "...", "message": "..."}` | 진행 표시(=요구사항의 "thinking 과정 표시"). 실제 실행 이벤트만 담는다 |
-| `tool_call` | `{"id","name","args"}` | 도구 호출 시작 |
+| `tool_call` | `{"id","name","args","source"?}` | 도구 호출 시작. `source`는 13단계에서 추가한 선택 필드(`"local"`\|`"mcp"`\|`"skill"`, 기본값 `"local"`)다. 13단계가 로컬 함수 Tool·10단계 MCP 도구·12단계 Skill을 같은 에이전트 루프 안에서 함께 실행하면서, 화면이 이 셋을 구분해 보여줄 수 있게 애플리케이션이 이미 아는 출처를 실어 보낸다. 기존 세 필드는 그대로이므로 이 필드를 모르는 이전 단계 클라이언트도 그대로 동작한다 |
 | `tool_result` | `{"id","ok","summary"}` | 도구 실행 결과 요약 |
 | `todo` | `{"items":[{"id","title","state"}]}` | 작업 목록. `state`는 `pending`/`running`/`done`/`failed`. **`failed`는 모델이 알려주지 않는다** — 12단계 실측 기준 `write_todos` 도구의 status에는 `pending`/`in_progress`/`completed`만 있다. 따라서 애플리케이션이 도구 호출 실패를 관측한 시점에 그때 진행 중이던 항목을 `failed`로 표시한다(추측이 아니라 실제 실행 사실) |
 | `sources` | `{"items":[{"id","doc","page","url","snippet"}]}` | 근거 목록 |
@@ -231,7 +231,15 @@ async def achat(messages, *, settings=None, temperature=0.2, max_tokens=1024,
                 tools=None, response_format=None) -> ChatResult: ...
 def achat_stream(messages, *, settings=None, temperature=0.2,
                  max_tokens=1024) -> AsyncIterator[str]: ...
+async def achat_json(messages, *, schema_name, json_schema,
+                     settings=None, temperature=0.0) -> dict: ...
+async def aembed(texts: list[str], *, settings=None) -> list[list[float]]: ...
 ```
+
+각 단계는 **그 단계에서 실제로 쓰는 함수만** 두면 된다(예: 스트리밍을 안 하는 단계는
+`achat_stream`이 없어도 된다). 다만 **두는 함수의 이름은 위 목록에서 고른다.**
+같은 일을 하는 함수에 단계마다 다른 이름을 붙이지 않는다 — 그렇게 하면 앞 단계 코드를
+이어받을 때마다 호출부를 고쳐야 하고, "기능을 누적한다"는 이 튜토리얼의 전제가 깨진다.
 
 **동기와 비동기를 둘 다 두는 이유**: CLI와 스크립트, 단위 테스트는 동기 호출이 읽기 쉽다.
 반대로 FastAPI 엔드포인트는 비동기여야 한다 — 클라이언트가 연결을 끊었을 때

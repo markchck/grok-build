@@ -96,6 +96,58 @@ def chat_completion(
     )["message"]
 
 
+async def achat_completion_full(
+    messages: list[dict[str, Any]],
+    *,
+    tools: list[dict[str, Any]] | None = None,
+    tool_choice: str | dict[str, Any] | None = None,
+    temperature: float = 0.2,
+    settings=None,
+) -> dict[str, Any]:
+    """``chat_completion_full()``의 비동기 버전(PROJECT-SPEC.md 9절).
+
+    ``docagent/agent.py``의 ``aadvance_run``(비동기 에이전트 루프)이 쓴다.
+    클라이언트가 연결을 끊었을 때 이 호출을 실제로 취소하려면
+    ``httpx.AsyncClient``로 연 연결을 이벤트 루프가 직접 닫을 수 있어야
+    하기 때문이다 — 동기 ``chat_completion_full()``을 스레드에서 돌리면 그
+    스레드를 밖에서 끊을 수 없어 취소가 반쪽이 된다(2단계 llm.py와 같은 이유).
+    """
+
+    settings = settings or get_settings()
+    payload: dict[str, Any] = {
+        "model": settings.chat_model,
+        "messages": messages,
+        "temperature": temperature,
+    }
+    if tools:
+        payload["tools"] = tools
+    if tool_choice is not None:
+        payload["tool_choice"] = tool_choice
+
+    url = f"{settings.openai_base_url.rstrip('/')}/chat/completions"
+    async with httpx.AsyncClient() as client:
+        try:
+            resp = await client.post(
+                url, headers=_headers(settings), json=payload, timeout=settings.request_timeout_seconds
+            )
+            resp.raise_for_status()
+        except httpx.TimeoutException as exc:
+            raise LLMError(f"모델 서버 응답 시간 초과({settings.request_timeout_seconds}초)") from exc
+        except httpx.HTTPStatusError as exc:
+            raise LLMError(f"모델 서버 오류 응답: {exc.response.status_code} {exc.response.text}") from exc
+        except httpx.HTTPError as exc:
+            raise LLMError(f"모델 서버 호출 실패: {exc}") from exc
+
+    data = resp.json()
+    try:
+        message = data["choices"][0]["message"]
+    except (KeyError, IndexError) as exc:
+        raise LLMError(f"예상하지 못한 응답 형식: {data}") from exc
+
+    usage = data.get("usage") or {}
+    return {"message": message, "usage": usage}
+
+
 def stream_chat_completion(messages: list[dict[str, Any]], *, settings=None) -> Iterator[str]:
     settings = settings or get_settings()
     payload = {
