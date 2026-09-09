@@ -39,7 +39,7 @@ OpenAI 호환 모델 서버도 채팅 모델과 임베딩 모델을 모두 지�
 
 ```bash
 cp .env.example .env
-# .env를 열어 OPENAI_BASE_URL, CHAT_MODEL, EMBEDDING_MODEL, MILVUS_URI 등을 채운다.
+# .env를 열어 OPENAI_BASE_URL, CHAT_MODEL, EMBEDDING_MODEL, DOCAGENT_MILVUS_URI 등을 채운다.
 ```
 
 ## 3. 샘플 데이터 생성

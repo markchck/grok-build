@@ -23,7 +23,7 @@ from pymilvus import AnnSearchRequest, RRFRanker, WeightedRanker
 
 from docagent.config import settings
 from docagent.llm import embed_texts
-from docagent.rag.store import DENSE_FIELD, SPARSE_FIELD, get_client
+from docagent.rag.store import DENSE_FIELD, SPARSE_FIELD, get_client, ensure_loaded, PK_FIELD
 
 OUTPUT_FIELDS = ["text", "doc_id", "doc_title", "page", "chunk_index", "source_url"]
 
@@ -33,7 +33,9 @@ RankerName = Literal["rrf", "weighted"]
 def _to_hit(raw: dict) -> dict:
     entity = raw.get("entity", {})
     return {
-        "pk": raw["id"],
+        # 검색 결과에서 기본 키는 "id"가 아니라 **기본 키 필드의 이름**을 키로 쓴다.
+        # 이 스키마의 기본 키 필드 이름이 PK_FIELD("pk")이므로 raw[PK_FIELD]다.
+        "pk": raw[PK_FIELD],
         "text": entity.get("text", ""),
         "doc_id": entity.get("doc_id", ""),
         "doc_title": entity.get("doc_title", ""),
@@ -54,6 +56,7 @@ def dense_search(
     """의미 검색. 질문을 임베딩해서 코사인 유사도로 가장 가까운 청크를 찾는다."""
     name = collection_name or settings.milvus_collection
     client = get_client()
+    ensure_loaded(client, name)
     vectors = embed_texts([query])
     results = client.search(
         name,
@@ -78,6 +81,7 @@ def sparse_search(
     점수를 매긴다. 임베딩을 계산하지 않는다 — 원문 문자열을 그대로 넘긴다."""
     name = collection_name or settings.milvus_collection
     client = get_client()
+    ensure_loaded(client, name)
     results = client.search(
         name,
         data=[query],
@@ -110,6 +114,7 @@ def hybrid_search(
     """
     name = collection_name or settings.milvus_collection
     client = get_client()
+    ensure_loaded(client, name)
     candidate_limit = candidate_limit or max(limit * 4, 20)
 
     dense_vectors = embed_texts([query])

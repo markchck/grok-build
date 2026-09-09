@@ -146,3 +146,65 @@ MAX_AGENT_SECONDS=120
 도구 호출·구조화 출력·스트리밍은 서버 구현마다 지원 범위가 다르다.
 1단계에서 `scripts/check_server_features.py`를 만들어 각 기능을 실제로 한 번씩 호출해 지원 여부를 출력하고,
 이후 장은 "이 기능이 필요하다. 미지원이면 이렇게 우회한다"를 명시한다.
+
+## 9. `config.py`와 `llm.py`의 공통 인터페이스 (전 단계 고정)
+
+병렬로 쓴 장들이 서로 다른 이름을 쓰면 "기능을 누적한다"는 전제가 깨진다.
+아래 이름과 시그니처는 모든 단계에서 동일하다. 단계마다 새로 짓지 않는다.
+
+```python
+# docagent/config.py
+@dataclass(frozen=True)
+class Settings:
+    openai_base_url: str
+    openai_api_key: str
+    chat_model: str
+    embedding_model: str          # 4단계부터 사용
+    milvus_uri: str               # DOCAGENT_MILVUS_URI (4단계부터)
+    milvus_token: str
+    milvus_collection: str
+    app_base_url: str
+    request_timeout_seconds: float
+    max_agent_steps: int          # 3단계부터
+    max_agent_seconds: float
+
+def load_settings() -> Settings: ...   # 환경 변수를 매번 새로 읽는다. 테스트에서 쓴다
+def get_settings() -> Settings: ...    # lru_cache로 한 번만 읽는다. 애플리케이션 코드는 이쪽을 쓴다
+```
+
+`Settings`는 단계별로 필요한 필드만 갖는다. **이미 있는 필드의 이름은 바꾸지 않고, 필요한 필드를 추가만 한다.**
+
+```python
+# docagent/llm.py
+class LLMError(RuntimeError): ...
+
+@dataclass(frozen=True)
+class ChatResult:
+    text: str
+    finish_reason: str
+    tool_calls: list[dict]   # 도구 호출이 없으면 빈 리스트 (3단계부터 채워진다)
+    raw: dict
+
+def chat(messages, *, settings=None, temperature=0.2, max_tokens=1024,
+         tools=None, response_format=None) -> ChatResult: ...
+def chat_stream(messages, *, settings=None, temperature=0.2, max_tokens=1024) -> Iterator[str]: ...
+def chat_json(messages, *, schema_name, json_schema, settings=None, temperature=0.0) -> dict: ...
+def embed(texts: list[str], *, settings=None) -> list[list[float]]: ...   # 4단계부터
+```
+
+- `settings=None`이면 `get_settings()`를 쓴다. 테스트는 `settings=`로 주입한다.
+- 내부 구현은 `openai` SDK를 쓴다. **예외는 1단계뿐이다.** 1단계는 HTTP 계층을 가르치기 위해
+  `raw_chat_completion`, `raw_chat_completion_stream`을 추가로 두고 SDK 구현과 나란히 비교한다.
+  2단계 이후에는 SDK 경로만 쓴다.
+- 모든 오류는 `LLMError`로 감싸서 올린다. 호출부가 라이브러리 예외 타입을 알 필요가 없게 한다.
+
+## 10. 의존성 버전 정책
+
+- 모든 단계의 `requirements.txt`는 **범위**로 쓴다(`openai>=3.10,<4`). 정확한 한 버전으로 못 박지 않는다.
+- 각 줄에 해당 단계에서 그 패키지를 왜 쓰는지 한 줄 주석을 단다.
+- 이전 단계에 이미 있던 패키지는 **같은 범위**를 쓴다. 단계마다 범위를 다르게 적지 않는다.
+- 확인된 기준선(2026-09-09 실측): `openai>=3.10,<4`, `httpx>=0.28,<0.29`,
+  `python-dotenv>=1.0,<2`, `fastapi>=0.115,<1.0`, `uvicorn[standard]>=0.30,<1.0`,
+  `pydantic>=2.7,<3`, `pymilvus[milvus-lite]>=2.6,<3`.
+- `openai` 3.x는 `httpx`가 아니라 `httpx2`에 의존한다. `httpx`를 직접 쓰는 단계(1단계)는
+  `httpx`를 따로 명시한다. 두 패키지는 이름이 달라 함께 설치돼도 충돌하지 않는다.

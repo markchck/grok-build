@@ -138,6 +138,18 @@ def create_collection(dense_dim: int, *, recreate: bool = False, collection_name
     client.load_collection(name)
 
 
+def ensure_loaded(client: MilvusClient, collection_name: str) -> None:
+    """검색 직전에 컬렉션이 메모리에 올라와 있게 한다.
+
+    컬렉션을 만들 때 한 번 load_collection을 부르지만, 그 상태는 프로세스를
+    새로 띄우면 유지되지 않는다(특히 Milvus Lite). 적재 스크립트와 API 서버가
+    서로 다른 프로세스이므로, 서버를 재시작하면 검색이
+    ``MilvusException(code=101, ... call load() before search/get/query)``로 실패한다.
+    load_collection은 이미 올라와 있으면 아무 일도 하지 않으므로 검색 경로에서 매번 불러도 된다.
+    """
+    client.load_collection(collection_name)
+
+
 def insert_chunks(records: Iterable[ChunkRecord], *, collection_name: str | None = None) -> int:
     name = collection_name or settings.milvus_collection
     client = get_client()

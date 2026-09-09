@@ -218,7 +218,7 @@ Milvus나 모델 서버 없이도 동작을 확인할 수 있어서 `tests/test_
 ### 환경 변수
 
 `code/step05_hybrid_rag/.env.example`을 복사해 쓴다. 5단계에서 새로 쓰는
-이름은 없다 — `MILVUS_URI`, `MILVUS_TOKEN`, `MILVUS_COLLECTION`은
+이름은 없다 — `DOCAGENT_MILVUS_URI`, `DOCAGENT_MILVUS_TOKEN`, `DOCAGENT_MILVUS_COLLECTION`은
 PROJECT-SPEC.md에 이미 4단계용으로 고정돼 있던 이름을 그대로 가져다 쓴다.
 
 ### 폴더 구조
@@ -559,7 +559,7 @@ python -m pytest tests/test_citations.py -k fake_citation -v
 미지원 서버에서는 이 장의 기능을 Sparse 전용으로 운영하는 것이
 1차 우회책이다.
 
-**마이그레이션 대상 컬렉션이 없는 경우.** `MILVUS_COLLECTION`을 존재하지
+**마이그레이션 대상 컬렉션이 없는 경우.** `DOCAGENT_MILVUS_COLLECTION`을 존재하지
 않는 이름으로 두고 `scripts/migrate_add_sparse.py`를 실행하면
 `migrate_add_sparse`가 `RuntimeError(f"마이그레이션할 컬렉션 '{old_name}'이(가)
 없다.")`를 던진다 — 임시 컬렉션을 만들기 전에 원본 존재 여부를 먼저
