@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<title>docagent - 기본 RAG (4단계)</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 760px; margin: 40px auto; padding: 0 16px; }
+  #answer { white-space: pre-wrap; border: 1px solid #ccc; border-radius: 8px; padding: 12px; min-height: 80px; }
+  #status { color: #666; font-size: 0.9em; margin: 8px 0; }
+  #sources { font-size: 0.9em; color: #333; }
+  #sources li { margin-bottom: 4px; }
+  button { padding: 8px 16px; }
+  input[type=text] { width: 70%; padding: 8px; }
+</style>
+</head>
+<body>
+  <h1>docagent - 기본 RAG</h1>
+  <p>먼저 <code>POST /api/ingest</code>로 샘플 문서를 적재한 뒤 질문한다.</p>
+  <button id="ingestBtn">문서 적재(ingest)</button>
+  <div id="ingestResult"></div>
+
+  <h2>질문</h2>
+  <input type="text" id="question" placeholder="예: 노트북 프로 15의 2분기 매출이 줄어든 이유는?" />
+  <button id="askBtn">질문하기</button>
+
+  <div id="status"></div>
+  <h3>답변</h3>
+  <div id="answer"></div>
+  <h3>근거</h3>
+  <ul id="sources"></ul>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

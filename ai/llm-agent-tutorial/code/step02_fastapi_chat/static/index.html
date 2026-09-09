@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<title>docagent 대화 (2단계)</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 720px; margin: 40px auto; padding: 0 16px; }
+  #log { border: 1px solid #ccc; border-radius: 8px; padding: 12px; min-height: 320px; margin-bottom: 12px; }
+  .msg { margin: 8px 0; white-space: pre-wrap; }
+  .msg.user { color: #1a1a1a; font-weight: 600; }
+  .msg.assistant { color: #0b5; }
+  .status { color: #888; font-size: 0.85em; font-style: italic; }
+  .error { color: #c00; }
+  form { display: flex; gap: 8px; }
+  input[type=text] { flex: 1; padding: 8px; }
+  button { padding: 8px 16px; }
+  button[disabled] { opacity: 0.5; }
+</style>
+</head>
+<body>
+  <h1>docagent — 2단계: FastAPI 대화 화면</h1>
+  <p>답변은 <code>token</code> 이벤트로, 진행 상태는 <code>status</code> 이벤트로 따로 표시한다.</p>
+
+  <div id="log"></div>
+
+  <form id="chat-form">
+    <input id="message" type="text" placeholder="질문을 입력한다" autocomplete="off" />
+    <button id="send" type="submit">보내기</button>
+    <button id="cancel" type="button" disabled>취소</button>
+  </form>
+
+  <script src="/app.js"></script>
+</body>
+</html>
