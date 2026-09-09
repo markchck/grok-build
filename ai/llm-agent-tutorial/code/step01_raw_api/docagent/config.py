@@ -1,15 +1,21 @@
 """환경 변수 로딩.
 
-모든 단계가 이 모듈을 공통으로 쓴다(PROJECT-SPEC.md 1절).
+모든 단계가 이 모듈을 공통으로 쓴다(PROJECT-SPEC.md 1절, 9절).
 환경 변수 이름은 PROJECT-SPEC.md 2절에 고정되어 있으므로 이름을 바꾸지 않는다.
 값이 없는 항목은 이후 단계(4단계 Milvus, 2단계 APP_BASE_URL 등)에서 쓰이므로
 1단계 실행에는 필요하지 않으면 기본값을 비워 두거나 None으로 둔다.
+
+load_settings()와 get_settings() 두 함수를 모든 단계가 같은 이름으로 제공한다
+(PROJECT-SPEC.md 9절). load_settings()는 호출할 때마다 환경 변수를 새로
+읽으므로 테스트에서 환경 변수를 바꿔가며 쓰기 좋다. get_settings()는
+lru_cache로 한 번만 읽으므로 애플리케이션 코드(cli.py, scripts/*)는 이쪽을 쓴다.
 """
 
 from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from functools import lru_cache
 
 from dotenv import load_dotenv
 
@@ -55,3 +61,13 @@ def load_settings() -> Settings:
         chat_model=_get_env("CHAT_MODEL", required=True),
         request_timeout_seconds=float(_get_env("REQUEST_TIMEOUT_SECONDS", default="60")),
     )
+
+
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    """환경 변수를 한 번만 읽어 캐시한다. 애플리케이션 코드는 이쪽을 쓴다.
+
+    테스트에서 환경 변수를 바꾼 뒤 새 값을 읽고 싶으면
+    get_settings.cache_clear()를 먼저 호출한다.
+    """
+    return load_settings()

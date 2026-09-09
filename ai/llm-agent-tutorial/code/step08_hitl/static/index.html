@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<title>docagent - Human in the Loop</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 720px; margin: 40px auto; padding: 0 16px; }
+  #log { white-space: pre-wrap; border: 1px solid #ddd; border-radius: 8px; padding: 16px; min-height: 120px; font-size: 14px; }
+  #status { color: #666; font-size: 13px; min-height: 18px; }
+  form { display: flex; gap: 8px; margin-bottom: 16px; }
+  input[type=text] { flex: 1; padding: 8px; }
+  button { padding: 8px; }
+  #approval-box { display: none; margin-top: 16px; border: 2px solid #e08; border-radius: 8px; padding: 16px; }
+  #approval-box textarea { width: 100%; box-sizing: border-box; height: 60px; }
+  #approval-box .row { display: flex; gap: 8px; margin-top: 8px; }
+  #approval-box button { flex: 1; }
+</style>
+</head>
+<body>
+  <h1>docagent - Human in the Loop</h1>
+  <p>승인이 필요한 작업(예: "notebook-q1-report를 보관해줘")을 요청하면 아래에 승인 UI가 뜬다.</p>
+  <form id="chat-form">
+    <input type="text" id="message" placeholder="예: notebook-q1-report를 보관해줘" required />
+    <button type="submit">보내기</button>
+  </form>
+  <div id="status"></div>
+  <div id="log"></div>
+
+  <div id="approval-box">
+    <div><strong>승인 요청</strong></div>
+    <div id="approval-reason"></div>
+    <div>인자(수정 요청 시 이 텍스트를 고쳐서 "수정 후 실행"을 누른다):</div>
+    <textarea id="approval-args"></textarea>
+    <div class="row">
+      <button id="btn-approve">승인(그대로 실행)</button>
+      <button id="btn-edit">수정 후 실행</button>
+      <button id="btn-reject-alt">거절(대안 진행)</button>
+      <button id="btn-reject-abort">거절(중단)</button>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

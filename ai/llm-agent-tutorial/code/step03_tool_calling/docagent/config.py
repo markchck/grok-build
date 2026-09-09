@@ -1,13 +1,18 @@
 """환경 변수 로딩.
 
-PROJECT-SPEC.md 2장에 정의된 이름만 읽는다. 이름은 절대 바꾸지 않는다.
+PROJECT-SPEC.md 2절에 정의된 이름만 읽는다. 이름은 절대 바꾸지 않는다.
 값이 없으면 합리적인 기본값을 쓰거나(로컬 개발용) 필수 항목은 에러로 알린다.
+
+load_settings()/get_settings() 두 이름은 PROJECT-SPEC.md 9절이 모든 단계에
+고정한 것이다. load_settings()는 매번 새로 읽고(테스트용), get_settings()는
+lru_cache로 한 번만 읽는다(애플리케이션 코드용).
 """
 
 from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from functools import lru_cache
 
 try:
     # python-dotenv가 설치돼 있으면 .env 파일을 읽는다. 없어도 동작은 한다.
@@ -63,4 +68,11 @@ def load_settings() -> Settings:
     )
 
 
-settings = load_settings()
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    """환경 변수를 한 번만 읽어 캐시한다. 애플리케이션 코드는 이쪽을 쓴다.
+
+    테스트에서 환경 변수를 바꾼 뒤 새 값을 읽고 싶으면
+    get_settings.cache_clear()를 먼저 호출한다.
+    """
+    return load_settings()

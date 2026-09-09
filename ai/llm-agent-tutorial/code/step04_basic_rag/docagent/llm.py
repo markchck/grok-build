@@ -1,5 +1,9 @@
 """OpenAI 호환 모델 서버 호출. 채팅과 임베딩 두 가지를 담당한다.
 
+PROJECT-SPEC.md 9절이 고정한 공통 인터페이스(``chat`` / ``chat_stream`` /
+``chat_json`` / ``embed`` / ``ChatResult`` / ``LLMError``)를 쓴다. 이 장부터
+``embed()``를 실제로 쓴다(EMBEDDING_MODEL이 Settings에 추가된 장이다).
+
 이 모듈은 "애플리케이션"이 모델 서버에 보내는 HTTP 요청을 감싼 것뿐이다.
 실제로 다음 토큰을 생성하거나 텍스트를 벡터로 바꾸는 연산은 전부 모델 서버(1단계에서
 다룬 OpenAI 호환 서버)가 수행한다. 이 파일은 그 요청을 만들고 응답을 파이썬 값으로
@@ -8,15 +12,35 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
+from dataclasses import dataclass, field
 from typing import Any
 
-from openai import OpenAI
+from openai import (
+    APIConnectionError,
+    APIError,
+    APIStatusError,
+    APITimeoutError,
+    OpenAI,
+)
 
-from docagent.config import Settings
+from docagent.config import Settings, get_settings
 
 
-def make_client(settings: Settings) -> OpenAI:
+class LLMError(RuntimeError):
+    """모델 서버 호출 실패(연결/타임아웃/상태 오류/응답 형식 오류)를 감싼다."""
+
+
+@dataclass(frozen=True)
+class ChatResult:
+    text: str
+    finish_reason: str | None
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+def _client(settings: Settings) -> OpenAI:
     return OpenAI(
         base_url=settings.openai_base_url,
         api_key=settings.openai_api_key,
@@ -24,43 +48,56 @@ def make_client(settings: Settings) -> OpenAI:
     )
 
 
-def embed_texts(client: OpenAI, model: str, texts: list[str]) -> list[list[float]]:
-    """텍스트 목록을 임베딩 벡터 목록으로 바꾼다.
-
-    한 번의 요청에 여러 텍스트를 담아 보낼 수 있다(배치). 응답의 data 배열
-    순서는 요청한 input 순서와 같다고 OpenAI 임베딩 API 규약에 정의돼 있으므로
-    그대로 매칭한다.
-    """
-    if not texts:
-        return []
-    resp = client.embeddings.create(model=model, input=texts)
-    return [item.embedding for item in resp.data]
-
-
-def embed_query(client: OpenAI, model: str, text: str) -> list[float]:
-    return embed_texts(client, model, [text])[0]
-
-
-def chat_complete(
-    client: OpenAI,
-    model: str,
+def chat(
     messages: list[dict[str, Any]],
+    *,
+    settings: Settings | None = None,
     temperature: float = 0.2,
-) -> str:
-    """스트리밍 없이 완성된 답변 문자열 하나를 받는다. (실패 상황 재현 등에 사용)"""
-    resp = client.chat.completions.create(
-        model=model,
-        messages=messages,
-        temperature=temperature,
+    max_tokens: int = 1024,
+    tools: list[dict[str, Any]] | None = None,
+    response_format: dict[str, Any] | None = None,
+) -> ChatResult:
+    """비스트리밍 호출. (실패 상황 재현 등에서 스트리밍 없이 답을 받을 때 쓴다.)"""
+    settings = settings or get_settings()
+    client = _client(settings)
+    kwargs: dict[str, Any] = {
+        "model": settings.chat_model,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+    if tools:
+        kwargs["tools"] = tools
+        kwargs["tool_choice"] = "auto"
+    if response_format is not None:
+        kwargs["response_format"] = response_format
+
+    try:
+        completion = client.chat.completions.create(**kwargs)
+    except APITimeoutError as exc:
+        raise LLMError(f"모델 서버 응답 시간 초과({settings.request_timeout_seconds}초)") from exc
+    except APIConnectionError as exc:
+        raise LLMError(f"모델 서버에 연결할 수 없다: {exc}") from exc
+    except APIStatusError as exc:
+        raise LLMError(f"모델 서버 오류 응답: {exc.status_code} {exc.message}") from exc
+    except APIError as exc:
+        raise LLMError(f"모델 서버 호출 실패: {exc}") from exc
+
+    choice = completion.choices[0]
+    return ChatResult(
+        text=choice.message.content or "",
+        finish_reason=choice.finish_reason,
+        tool_calls=[],
+        raw=completion.model_dump(),
     )
-    return resp.choices[0].message.content or ""
 
 
 def chat_stream(
-    client: OpenAI,
-    model: str,
     messages: list[dict[str, Any]],
+    *,
+    settings: Settings | None = None,
     temperature: float = 0.2,
+    max_tokens: int = 1024,
 ) -> Iterator[str]:
     """토큰(텍스트 조각) 단위로 생성한다.
 
@@ -69,15 +106,84 @@ def chat_stream(
     scripts/check_server_features.py로 스트리밍 지원 여부를 먼저 확인해두는 것을
     권장한다(이 장에서는 재구현하지 않는다).
     """
-    stream = client.chat.completions.create(
-        model=model,
-        messages=messages,
+    settings = settings or get_settings()
+    client = _client(settings)
+    try:
+        stream = client.chat.completions.create(
+            model=settings.chat_model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stream=True,
+        )
+        for chunk in stream:
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            if delta and delta.content:
+                yield delta.content
+    except APITimeoutError as exc:
+        raise LLMError(f"모델 서버 응답 시간 초과({settings.request_timeout_seconds}초)") from exc
+    except APIConnectionError as exc:
+        raise LLMError(f"모델 서버에 연결할 수 없다: {exc}") from exc
+    except APIStatusError as exc:
+        raise LLMError(f"모델 서버 오류 응답: {exc.status_code} {exc.message}") from exc
+    except APIError as exc:
+        raise LLMError(f"모델 서버 호출 실패: {exc}") from exc
+
+
+def chat_json(
+    messages: list[dict[str, Any]],
+    *,
+    schema_name: str,
+    json_schema: dict[str, Any],
+    settings: Settings | None = None,
+    temperature: float = 0.0,
+) -> dict[str, Any]:
+    """구조화된 JSON 출력을 요청한다. 서버 지원 여부는
+    scripts/check_server_features.py(1단계)로 먼저 확인한다."""
+    result = chat(
+        messages,
+        settings=settings,
         temperature=temperature,
-        stream=True,
+        response_format={
+            "type": "json_schema",
+            "json_schema": {"name": schema_name, "schema": json_schema, "strict": True},
+        },
     )
-    for chunk in stream:
-        if not chunk.choices:
-            continue
-        delta = chunk.choices[0].delta
-        if delta and delta.content:
-            yield delta.content
+    try:
+        return json.loads(result.text or "{}")
+    except json.JSONDecodeError as exc:
+        raise LLMError(
+            f"서버가 json_schema를 요청했는데도 유효한 JSON을 돌려주지 않았다: "
+            f"{result.text[:300]}"
+        ) from exc
+
+
+def embed(texts: list[str], *, settings: Settings | None = None) -> list[list[float]]:
+    """텍스트 목록을 임베딩 벡터 목록으로 바꾼다. (4단계부터 쓴다)
+
+    한 번의 요청에 여러 텍스트를 담아 보낼 수 있다(배치). 응답의 data 배열
+    순서는 요청한 input 순서와 같다고 OpenAI 임베딩 API 규약에 정의돼 있지만,
+    이를 보장하지 않는 서버도 있으므로 index로 정렬해 되돌려준다.
+    """
+    if not texts:
+        return []
+    settings = settings or get_settings()
+    client = _client(settings)
+    try:
+        resp = client.embeddings.create(model=settings.embedding_model, input=texts)
+    except APITimeoutError as exc:
+        raise LLMError(f"임베딩 서버 응답 시간 초과({settings.request_timeout_seconds}초)") from exc
+    except APIConnectionError as exc:
+        raise LLMError(f"임베딩 서버에 연결할 수 없다: {exc}") from exc
+    except APIStatusError as exc:
+        raise LLMError(
+            f"임베딩 서버 오류 응답: {exc.status_code} {exc.message}. "
+            "서버가 /embeddings 엔드포인트를 지원하는지 먼저 확인한다."
+        ) from exc
+    except APIError as exc:
+        raise LLMError(f"임베딩 서버 호출 실패: {exc}") from exc
+
+    items = sorted(resp.data, key=lambda item: item.index)
+    return [item.embedding for item in items]

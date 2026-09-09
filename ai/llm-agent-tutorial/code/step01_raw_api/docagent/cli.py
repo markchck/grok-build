@@ -17,11 +17,11 @@ import sys
 
 from docagent.config import load_settings
 from docagent.llm import (
-    LLMCallError,
+    LLMError,
+    chat,
+    chat_stream,
     raw_chat_completion,
     raw_chat_completion_stream,
-    sdk_chat_completion,
-    sdk_chat_completion_stream,
 )
 
 SYSTEM_PROMPT = (
@@ -52,32 +52,51 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def run_once(
     settings, history: list[dict[str, str]], args: argparse.Namespace
 ) -> None:
-    """질문 한 번을 처리하고 답변을 표준 출력에 찍는다."""
-    if args.backend == "sdk":
-        chat_fn, stream_fn = sdk_chat_completion, sdk_chat_completion_stream
-    else:
-        chat_fn, stream_fn = raw_chat_completion, raw_chat_completion_stream
+    """질문 한 번을 처리하고 답변을 표준 출력에 찍는다.
 
+    --backend sdk는 PROJECT-SPEC.md 9절의 공통 인터페이스(chat/chat_stream)를
+    쓴다. 이 함수들은 settings를 키워드 인자로 받는다(settings=None이면
+    get_settings()를 쓰지만, 이 CLI는 load_settings()로 매번 새로 읽은 값을
+    명시적으로 넘긴다). --backend raw는 1단계 전용 HTTP 직접 호출이라
+    settings를 첫 위치 인자로 받는 예전 시그니처를 그대로 쓴다.
+    """
     if args.stream:
         print("assistant> ", end="", flush=True)
         pieces: list[str] = []
-        for piece in stream_fn(
-            settings,
-            history,
-            temperature=args.temperature,
-            max_tokens=args.max_tokens,
-        ):
+        if args.backend == "sdk":
+            stream_iter = chat_stream(
+                history,
+                settings=settings,
+                temperature=args.temperature,
+                max_tokens=args.max_tokens,
+            )
+        else:
+            stream_iter = raw_chat_completion_stream(
+                settings,
+                history,
+                temperature=args.temperature,
+                max_tokens=args.max_tokens,
+            )
+        for piece in stream_iter:
             print(piece, end="", flush=True)
             pieces.append(piece)
         print()
         history.append({"role": "assistant", "content": "".join(pieces)})
     else:
-        result = chat_fn(
-            settings,
-            history,
-            temperature=args.temperature,
-            max_tokens=args.max_tokens,
-        )
+        if args.backend == "sdk":
+            result = chat(
+                history,
+                settings=settings,
+                temperature=args.temperature,
+                max_tokens=args.max_tokens,
+            )
+        else:
+            result = raw_chat_completion(
+                settings,
+                history,
+                temperature=args.temperature,
+                max_tokens=args.max_tokens,
+            )
         print(f"assistant> {result.text}")
         if result.finish_reason not in (None, "stop"):
             print(f"  (finish_reason={result.finish_reason})")
@@ -114,7 +133,7 @@ def main(argv: list[str] | None = None) -> int:
 
         try:
             run_once(settings, history, args)
-        except LLMCallError as exc:
+        except LLMError as exc:
             # 모델 호출이 최종적으로 실패해도 대화 자체는 계속할 수 있게 한다.
             # 실패한 질문을 history에 남겨 두면 다음 요청에서도 계속 실패하는
             # 경우가 있어(예: 너무 긴 컨텍스트) 되돌린다.

@@ -1,13 +1,12 @@
 # 이 단계에서 실제로 쓰는 패키지만 나열한다.
-# pymilvus 2.6.x 기준으로 코드를 작성했다. 2026-09 시점 PyPI에는 pymilvus 3.0.x도 올라와 있으나
-# 이 장의 코드는 3.0.x API 변경 여부를 확인하지 못했다. 3.0.x를 쓰려면 먼저 공식 문서에서
-# MilvusClient의 create_schema / add_field / prepare_index_params 시그니처가 같은지 확인한다.
-pymilvus>=2.5,<3.0
+# 버전은 범위로 쓴다(PROJECT-SPEC.md 10절 기준선, 2026-09-09 실측).
+# 이전 단계에 이미 있던 패키지(openai, fastapi, uvicorn, python-dotenv, pydantic)는
+# 같은 범위를 그대로 쓴다.
 
-# OpenAI 호환 모델 서버 호출(채팅·임베딩 공용)
-openai>=1.40,<2.0
+pymilvus[milvus-lite]>=2.6,<3  # Milvus 클라이언트 + Milvus Lite(내장 모드, Windows 미지원)
+openai>=3.10,<4                # OpenAI 호환 SDK 호출(채팅·임베딩 공용, docagent/llm.py)
 
-fastapi>=0.115,<1.0
-uvicorn[standard]>=0.30,<1.0
-python-dotenv>=1.0,<2.0
-pydantic>=2.7,<3.0
+fastapi>=0.115,<1.0             # 웹 프레임워크
+uvicorn[standard]>=0.30,<1.0    # ASGI 서버
+python-dotenv>=1.0,<2           # .env 파일에서 환경 변수 로딩
+pydantic>=2.7,<3                # 요청 바디 검증(ChatRequest 등)

@@ -1,6 +1,6 @@
 """4단계 컬렉션(dense만 있음)에 sparse(BM25) 필드를 추가하는 마이그레이션.
 
-실행 전에 반드시 Milvus 서버가 떠 있고 MILVUS_COLLECTION에 4단계에서 넣은
+실행 전에 반드시 Milvus 서버가 떠 있고 DOCAGENT_MILVUS_COLLECTION에 4단계에서 넣은
 데이터가 들어 있어야 한다. docagent.rag.store.migrate_add_sparse의 동작
 방식(내보내기 → 새 컬렉션 생성 → 다시 넣기 → 이름 바꾸기)은 그 함수의
 docstring에 설명되어 있다.

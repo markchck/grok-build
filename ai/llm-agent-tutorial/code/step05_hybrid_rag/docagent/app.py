@@ -23,9 +23,9 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from docagent.config import settings
+from docagent.config import get_settings
 from docagent.events import done_event, error_event, sources_event, status_event, token_event
-from docagent.llm import LLMError, chat_completion
+from docagent.llm import LLMError, chat
 from docagent.rag import citations
 from docagent.rag.search import dense_search, hybrid_search, sparse_search
 from docagent.rag.store import get_client, make_chunk_id
@@ -86,7 +86,7 @@ async def _chat_stream(req: ChatRequest) -> AsyncIterator[str]:
         yield done_event("stop")
         return
 
-    retrieved = citations.build_retrieved_sources(hits, app_base_url=settings.app_base_url)
+    retrieved = citations.build_retrieved_sources(hits, app_base_url=get_settings().app_base_url)
     context_block = _build_context_block(retrieved)
 
     yield status_event("analyzing", f"{len(retrieved)}개 청크를 찾았다. 답변을 준비하는 중")
@@ -100,17 +100,17 @@ async def _chat_stream(req: ChatRequest) -> AsyncIterator[str]:
     ]
 
     try:
-        message = chat_completion(messages)
+        result = chat(messages, settings=get_settings())
     except LLMError as exc:
         yield error_event("llm_call_failed", str(exc))
         yield done_event("stop")
         return
 
-    raw_answer = message.get("content") or ""
+    raw_answer = result.text
 
     yield status_event("verifying", "답변의 인용 표시가 실제 검색 결과를 가리키는지 확인하는 중")
     result = citations.validate_and_link_citations(
-        raw_answer, retrieved, app_base_url=settings.app_base_url
+        raw_answer, retrieved, app_base_url=get_settings().app_base_url
     )
 
     yield status_event("writing", "검증된 답변을 전달하는 중")
@@ -122,7 +122,10 @@ async def _chat_stream(req: ChatRequest) -> AsyncIterator[str]:
 
 
 @app.post("/chat")
-async def chat(req: ChatRequest) -> StreamingResponse:
+async def chat_endpoint(req: ChatRequest) -> StreamingResponse:
+    # 주의: 이 함수 이름을 "chat"으로 지으면 위에서 가져온 docagent.llm.chat과
+    # 모듈 전역 이름이 겹쳐, _chat_stream() 안의 chat(...) 호출이 이 라우트
+    # 핸들러를 가리키게 되는 버그가 생긴다. 그래서 라우트 핸들러는 chat_endpoint로 둔다.
     return StreamingResponse(_chat_stream(req), media_type="text/event-stream")
 
 
@@ -149,7 +152,7 @@ async def view_source(doc_id: str, page: int = 0, chunk: int = 0) -> HTMLRespons
     chunk_text = ""
     try:
         rows = client.query(
-            settings.milvus_collection,
+            get_settings().milvus_collection,
             filter=f'pk == "{chunk_id}"',
             output_fields=["text", "doc_title"],
         )

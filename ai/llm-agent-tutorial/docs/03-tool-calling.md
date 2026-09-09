@@ -359,42 +359,64 @@ TOOL_SPECS: list[dict[str, Any]] = [
 
 ### 4.4 모델 호출
 
-`llm.py`에 도구 목록을 함께 보내는 호출 함수를 추가한다. 이 함수는 모델의 응답을
-그대로 반환할 뿐, 응답 안의 `tool_calls`를 해석하거나 실행하지 않는다.
+`docagent/llm.py`는 `PROJECT-SPEC.md` 9절이 고정한 공통 인터페이스를 쓴다 — 1·2단계와
+같은 이름의 `chat()` 함수이고, 여기서 처음으로 `tools`를 실제로 채워 보낸다. `chat()`은
+모델의 응답을 `ChatResult`(`text`, `finish_reason`, `tool_calls`, `raw`)로 돌려줄 뿐,
+`tool_calls`를 해석하거나 실행하지 않는다.
 
-`code/step03_tool_calling/docagent/llm.py`
+`code/step03_tool_calling/docagent/llm.py` (일부)
 ```python
-def chat_completion(
+def chat(
     messages: list[dict[str, Any]],
     *,
+    settings: Settings | None = None,
+    temperature: float = 0.2,
+    max_tokens: int = 1024,
+    tools: list[dict[str, Any]] | None = None,
+    response_format: dict[str, Any] | None = None,
+) -> ChatResult:
+    settings = settings or get_settings()
+    client = _client(settings)
+    kwargs: dict[str, Any] = {
+        "model": settings.chat_model, "messages": messages,
+        "temperature": temperature, "max_tokens": max_tokens,
+    }
+    if tools:
+        kwargs["tools"] = tools
+        kwargs["tool_choice"] = "auto"  # 모델이 도구 사용 여부를 스스로 판단하게 한다
+    completion = client.chat.completions.create(**kwargs)
+    choice = completion.choices[0]
+    return ChatResult(
+        text=choice.message.content or "",
+        finish_reason=choice.finish_reason,
+        tool_calls=_tool_calls_to_dicts(choice.message.tool_calls),
+        raw=completion.model_dump(),
+    )
+```
+
+`ChatResult.tool_calls`가 비어 있지 않으면 모델이 도구를 요청한 것이고, 비어 있으면
+`text`가 최종 답변이다. (오류 처리를 포함한 전체 코드는 `docagent/llm.py`를 본다.)
+
+`agent.py`의 루프는 원래 "assistant 메시지 dict"(`{"role", "content", "tool_calls"}`)
+형태를 주고받도록 짜여 있다 — 이 형태가 테스트에서 가짜 모델 함수를 끼워 넣기
+편하기 때문이다(4.7절). 그래서 기본 호출 함수는 `chat()`을 이 dict 형태로 옮겨주는
+작은 어댑터로 둔다.
+
+`code/step03_tool_calling/docagent/agent.py` (일부)
+```python
+def _default_chat_fn(
+    messages: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None = None,
     tool_choice: str | dict[str, Any] | None = None,
     temperature: float = 0.2,
 ) -> dict[str, Any]:
-    payload: dict[str, Any] = {
-        "model": settings.chat_model,
-        "messages": messages,
-        "temperature": temperature,
+    result = llm.chat(messages, settings=get_settings(), temperature=temperature, tools=tools)
+    return {
+        "role": "assistant",
+        "content": result.text or None,
+        "tool_calls": result.tool_calls or None,
     }
-    if tools:
-        payload["tools"] = tools
-    if tool_choice is not None:
-        payload["tool_choice"] = tool_choice
-
-    resp = httpx.post(
-        f"{settings.openai_base_url.rstrip('/')}/chat/completions",
-        headers=_headers(),
-        json=payload,
-        timeout=settings.request_timeout_seconds,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    return data["choices"][0]["message"]
 ```
-
-반환값은 `{"role": "assistant", "content": ..., "tool_calls": [...] | None}` 형태다.
-`tool_calls`가 있으면 모델이 도구를 요청한 것이고, 없으면 `content`가 최종 답변이다.
-(실제 오류 처리를 포함한 전체 코드는 `docagent/llm.py`를 본다.)
 
 ### 4.5 도구 실행: 애플리케이션이 함수를 부른다
 
@@ -544,6 +566,15 @@ pytest tests/ -v
 
 `tests/test_tools.py`는 도구 함수와 pydantic 검증을, `tests/test_agent.py`는 가짜
 모델 응답으로 에이전트 루프의 반복·중단 조건을 확인한다.
+
+**모델 서버 없이 확인하기**: `code/_tools/fake_openai_server.py`(학습용 OpenAI 호환
+스텁 서버)를 띄우고 `.env`의 `OPENAI_BASE_URL`을 그 주소로 바꾸면 5.1~5.2의 curl
+요청을 실제 모델 없이도 그대로 실행해 볼 수 있다. 이 스텁 서버는 `tools`가 오면
+`tool_call` 1회 → (결과를 role="tool"로 받으면) 최종 답변, 순서로 응답하도록 만들어져
+있어 위 여섯 단계 이벤트 순서를 그대로 재현한다. 다만 `tool_call`의 `args`는 항상
+빈 값이므로 "질문과 맞는 인자인지" 같은 의미적인 확인은 할 수 없다 — 그 확인은 실제
+모델 서버가 필요하다. 이 서버가 확인해 주는 것과 못 해주는 것은
+`code/_tools/README.md`에 정리돼 있다.
 
 ## 6. 실패 상황 실습
 

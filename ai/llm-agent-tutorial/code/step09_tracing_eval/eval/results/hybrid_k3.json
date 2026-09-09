@@ -1,0 +1,127 @@
+{
+  "config_name": "hybrid_k3",
+  "top_k": 3,
+  "mean_recall": 1.0,
+  "mean_mrr": 0.7083333333333333,
+  "hit_rate": 1.0,
+  "per_question": [
+    {
+      "question_id": "q1",
+      "question": "2분기 노트북 매출이 둔화된 이유는?",
+      "retrieved_ids": [
+        "keyboard-q2-report#p0-c0",
+        "notebook-q2-report#p0-c0",
+        "notebook-q1-report#p0-c0"
+      ],
+      "expected_ids": [
+        "notebook-q2-report#p0-c0"
+      ],
+      "recall": 1.0,
+      "mrr": 0.5,
+      "hit": true
+    },
+    {
+      "question_id": "q2",
+      "question": "노트북 판매가 감소한 원인",
+      "retrieved_ids": [
+        "notebook-q1-report#p0-c0",
+        "notebook-q2-report#p0-c0",
+        "keyboard-q2-report#p0-c0"
+      ],
+      "expected_ids": [
+        "notebook-q2-report#p0-c0"
+      ],
+      "recall": 1.0,
+      "mrr": 0.5,
+      "hit": true
+    },
+    {
+      "question_id": "q3",
+      "question": "1분기 노트북 매출 최고치를 기록한 날짜와 판매량은?",
+      "retrieved_ids": [
+        "notebook-q2-report#p0-c0",
+        "monitor-q1-report#p0-c0",
+        "notebook-q1-report#p0-c0"
+      ],
+      "expected_ids": [
+        "notebook-q1-report#p0-c0"
+      ],
+      "recall": 1.0,
+      "mrr": 0.3333333333333333,
+      "hit": true
+    },
+    {
+      "question_id": "q4",
+      "question": "키보드 2분기 매출이 상승한 이유는?",
+      "retrieved_ids": [
+        "keyboard-q2-report#p0-c0",
+        "notebook-q2-report#p0-c0",
+        "monitor-q1-report#p0-c0"
+      ],
+      "expected_ids": [
+        "keyboard-q2-report#p0-c0"
+      ],
+      "recall": 1.0,
+      "mrr": 1.0,
+      "hit": true
+    },
+    {
+      "question_id": "q5",
+      "question": "모니터 1분기 부산 지역 판매량은 어땠는가?",
+      "retrieved_ids": [
+        "monitor-q1-report#p0-c0",
+        "notebook-q1-report#p0-c0",
+        "keyboard-q2-report#p0-c0"
+      ],
+      "expected_ids": [
+        "monitor-q1-report#p0-c0"
+      ],
+      "recall": 1.0,
+      "mrr": 1.0,
+      "hit": true
+    },
+    {
+      "question_id": "q6",
+      "question": "노트북 1분기 부산 지역 판매량이 줄어든 이유는?",
+      "retrieved_ids": [
+        "notebook-q2-report#p0-c0",
+        "keyboard-q2-report#p0-c0",
+        "notebook-q1-report#p0-c0"
+      ],
+      "expected_ids": [
+        "notebook-q1-report#p0-c0"
+      ],
+      "recall": 1.0,
+      "mrr": 0.3333333333333333,
+      "hit": true
+    },
+    {
+      "question_id": "q7",
+      "question": "이 회사의 창립일은 언제인가?",
+      "retrieved_ids": [
+        "keyboard-q2-report#p0-c0",
+        "notebook-q1-report#p0-c0",
+        "notebook-q2-report#p0-c0"
+      ],
+      "expected_ids": [],
+      "recall": 1.0,
+      "mrr": 1.0,
+      "hit": true
+    },
+    {
+      "question_id": "q8",
+      "question": "부산 지역 노트북 배송이 며칠 지연되었는가?",
+      "retrieved_ids": [
+        "notebook-q1-report#p0-c0",
+        "monitor-q1-report#p0-c0",
+        "notebook-q2-report#p0-c0"
+      ],
+      "expected_ids": [
+        "notebook-q1-report#p0-c0"
+      ],
+      "recall": 1.0,
+      "mrr": 1.0,
+      "hit": true
+    }
+  ]
+}

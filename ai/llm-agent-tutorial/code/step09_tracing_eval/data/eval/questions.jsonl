@@ -1,0 +1,8 @@
+{"id": "q1", "question": "2분기 노트북 매출이 둔화된 이유는?", "expected_chunk_ids": ["notebook-q2-report#p0-c0"], "expected_keywords": ["경쟁사", "신모델"], "note": "가장 기본적인 원인 질문. 질문 어휘가 문서 어휘와 거의 겹친다."}
+{"id": "q2", "question": "노트북 판매가 감소한 원인", "expected_chunk_ids": ["notebook-q2-report#p0-c0"], "expected_keywords": ["경쟁사", "신모델"], "note": "실패 사례. '감소한'이 문서 원문의 '둔화되었다'와 토큰이 일치하지 않아 sparse(BM25) top-1이 notebook-q1-report로 틀린다(VERIFIED-FINDINGS.md 7절과 동일한 현상). 5절 실습에서 재현한다."}
+{"id": "q3", "question": "1분기 노트북 매출 최고치를 기록한 날짜와 판매량은?", "expected_chunk_ids": ["notebook-q1-report#p0-c0"], "expected_keywords": ["2월 19일", "503대"], "note": "정확한 날짜·수치 일치가 중요한 질문. sparse가 강한 유형."}
+{"id": "q4", "question": "키보드 2분기 매출이 상승한 이유는?", "expected_chunk_ids": ["keyboard-q2-report#p0-c0"], "expected_keywords": ["무접점", "신제품"], "note": ""}
+{"id": "q5", "question": "모니터 1분기 부산 지역 판매량은 어땠는가?", "expected_chunk_ids": ["monitor-q1-report#p0-c0"], "expected_keywords": ["200대", "안팎"], "note": ""}
+{"id": "q6", "question": "노트북 1분기 부산 지역 판매량이 줄어든 이유는?", "expected_chunk_ids": ["notebook-q1-report#p0-c0"], "expected_keywords": ["물류", "지연"], "note": "notebook-q1과 notebook-q2 둘 다 '노트북'을 언급해 서로 헷갈리기 쉬운 질문."}
+{"id": "q7", "question": "이 회사의 창립일은 언제인가?", "expected_chunk_ids": [], "expected_keywords": [], "expect_no_answer": true, "note": "코퍼스에 없는 질문. 검색 결과가 있어도(dense는 항상 뭔가 반환한다) 근거로 답하면 안 된다 — 4단계 '근거 부족 시 답변 처리'와 연결."}
+{"id": "q8", "question": "부산 지역 노트북 배송이 며칠 지연되었는가?", "expected_chunk_ids": ["notebook-q1-report#p0-c0"], "expected_keywords": ["이틀"], "note": "본문에 있는 정확한 수치(이틀)를 그대로 찾아야 하는 질문. sparse에 유리."}

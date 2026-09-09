@@ -3,12 +3,17 @@
 PROJECT-SPEC.md 2절에 정의된 이름만 읽는다. 이름은 절대 바꾸지 않는다.
 5단계에서 새로 쓰는 값은 MILVUS_* 세 개뿐이며, 이름은 이미 PROJECT-SPEC.md에
 4단계용으로 고정돼 있으므로 여기서 새로 만들지 않고 그대로 가져다 쓴다.
+
+load_settings()/get_settings()는 PROJECT-SPEC.md 9절이 모든 단계에 고정한
+이름이다. load_settings()는 호출할 때마다 새로 읽고(테스트용),
+get_settings()는 lru_cache로 한 번만 읽는다(애플리케이션 코드용).
 """
 
 from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from functools import lru_cache
 
 try:
     # python-dotenv가 설치돼 있으면 .env 파일을 읽는다. 없어도 동작은 한다.
@@ -67,4 +72,11 @@ def load_settings() -> Settings:
     )
 
 
-settings = load_settings()
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    """환경 변수를 한 번만 읽어 캐시한다. 애플리케이션 코드는 이쪽을 쓴다.
+
+    테스트에서 환경 변수를 바꾼 뒤 새 값을 읽고 싶으면
+    get_settings.cache_clear()를 먼저 호출한다.
+    """
+    return load_settings()

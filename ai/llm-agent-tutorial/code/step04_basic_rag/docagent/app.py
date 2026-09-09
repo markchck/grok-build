@@ -19,8 +19,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from docagent import events
-from docagent.config import Settings, load_settings
-from docagent.llm import chat_stream, embed_texts, make_client
+from docagent.config import Settings, get_settings
+from docagent.llm import LLMError, chat_stream, embed
 from docagent.rag.ingest import build_chunks, load_documents
 from docagent.rag.search import NO_EVIDENCE_MESSAGE, build_messages, retrieve
 from docagent.rag.store import (
@@ -36,8 +36,7 @@ STATIC_DIR = BASE_DIR / "static"
 app = FastAPI(title="docagent - step04 basic RAG")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
-_settings: Settings = load_settings()
-_llm_client = make_client(_settings)
+_settings: Settings = get_settings()
 _milvus_client = make_milvus_client(_settings.milvus_uri, _settings.milvus_token)
 
 
@@ -74,7 +73,7 @@ def ingest():
         return {"ok": False, "message": "청크가 생성되지 않았다."}
 
     texts = [c.text for c in chunks]
-    vectors = embed_texts(_llm_client, _settings.embedding_model, texts)
+    vectors = embed(texts, settings=_settings)
     dense_dim = len(vectors[0])
 
     create_chunks_collection(_milvus_client, _settings.milvus_collection, dense_dim)
@@ -95,8 +94,6 @@ def _chat_event_stream(question: str):
     result = retrieve(
         milvus_client=_milvus_client,
         collection_name=_settings.milvus_collection,
-        llm_client=_llm_client,
-        embedding_model=_settings.embedding_model,
         question=question,
         top_k=_settings.retrieval_top_k,
         score_threshold=_settings.retrieval_score_threshold,
@@ -125,9 +122,9 @@ def _chat_event_stream(question: str):
     messages = build_messages(question, result.accepted)
 
     try:
-        for piece in chat_stream(_llm_client, _settings.chat_model, messages):
+        for piece in chat_stream(messages, settings=_settings):
             yield events.token(piece)
-    except Exception as exc:  # noqa: BLE001 - 실패를 그대로 error 이벤트로 보여준다.
+    except LLMError as exc:
         yield events.error("model_call_failed", str(exc))
         yield events.done(events.FINISH_ERROR)
         return

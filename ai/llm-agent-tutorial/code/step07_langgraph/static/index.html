@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<title>docagent - LangGraph 오케스트레이션</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 720px; margin: 40px auto; padding: 0 16px; }
+  #answer { white-space: pre-wrap; border: 1px solid #ddd; border-radius: 8px; padding: 16px; min-height: 80px; }
+  #trace { color: #555; font-size: 13px; margin-bottom: 12px; }
+  #trace div { padding: 2px 0; }
+  #sources { margin-top: 12px; font-size: 14px; }
+  #sources a { display: block; margin: 4px 0; }
+  form { display: flex; gap: 8px; margin-bottom: 16px; }
+  input[type=text] { flex: 1; padding: 8px; }
+  button { padding: 8px; }
+</style>
+</head>
+<body>
+  <h1>docagent - LangGraph 오케스트레이션</h1>
+  <p style="color:#666;font-size:13px;">
+    질문 분류 → 검색(dense/sparse 병렬) → 근거 확인 → (부족하면) 재검색 → 답변.
+    아래 실행 로그는 그래프 노드가 실제로 끝날 때마다 서버가 보낸 <code>status</code>
+    이벤트를 그대로 쌓은 것이다.
+  </p>
+  <form id="chat-form">
+    <input type="text" id="message" placeholder="예: 2분기 노트북 매출이 둔화된 이유는?" required />
+    <button type="submit">질문</button>
+  </form>
+  <div id="trace"></div>
+  <div id="answer"></div>
+  <div id="sources"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

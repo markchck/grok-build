@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Literal
 
@@ -20,8 +21,9 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from .config import get_settings
 from .events import done_event, error_event, status_event, token_event
-from .llm import LLMError, stream_chat_completion
+from .llm import LLMError, achat_stream
 from .middleware import RequestContextMiddleware
 
 logger = logging.getLogger("docagent.app")
@@ -74,6 +76,22 @@ def _get_or_create_session(session_id: str | None) -> tuple[str, list[dict[str, 
     return new_id, history
 
 
+async def _stream_chat_completion_async(messages: list[dict[str, str]]) -> AsyncIterator[str]:
+    """docagent.llm.achat_stream을 그대로 흘려보낸다.
+
+    llm.py는 같은 호출을 동기(``chat_stream``)와 비동기(``achat_stream``) 두 벌로
+    제공한다(PROJECT-SPEC.md 9절). 서버 코드가 비동기 쪽을 쓰는 이유는 취소 때문이다.
+    클라이언트가 연결을 끊으면 이 async generator를 돌리는 태스크가 취소되고,
+    그 취소가 ``achat_stream`` 안의 ``finally``까지 전달되어 모델 서버로 나가는
+    HTTP 스트림이 실제로 닫힌다. 동기 제너레이터를 별도 스레드에서 돌리는 방식으로는
+    그 스레드를 밖에서 끊을 수 없어, 클라이언트가 떠난 뒤에도 모델 서버가 계속
+    토큰을 생성하며 자원을 쓴다.
+    """
+    settings = get_settings()
+    async for piece in achat_stream(messages, settings=settings):
+        yield piece
+
+
 async def _chat_event_stream(
     request: Request, session_id: str, history: list[dict[str, str]]
 ):
@@ -89,7 +107,7 @@ async def _chat_event_stream(
 
     try:
         yield status_event("writing", "모델 서버에 답변을 요청하는 중")
-        async for piece in stream_chat_completion(history):
+        async for piece in _stream_chat_completion_async(history):
             # request.is_disconnected()는 클라이언트가 이미 끊었는지 확인하는 명시적 확인이다.
             # 이 프로젝트는 BaseHTTPMiddleware를 쓰지 않으므로(middleware.py 참고) 이 값을
             # 신뢰할 수 있다. StreamingResponse 자체도 클라이언트 종료 시 이 generator가
@@ -109,8 +127,8 @@ async def _chat_event_stream(
         logger.info("request_id=%s stream task cancelled", request_id)
         raise
     except LLMError as exc:
-        logger.warning("request_id=%s llm_error code=%s message=%s", request_id, exc.code, exc)
-        yield error_event(exc.code, str(exc))
+        logger.warning("request_id=%s llm_error message=%s", request_id, exc)
+        yield error_event("llm_error", str(exc))
         yield done_event("stop")
         return
 

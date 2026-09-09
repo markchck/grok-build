@@ -144,20 +144,20 @@ Markdown 문서를 쓰고 `page=0`으로 고정한다. PDF처럼 실제 페이�
 
 ### 패키지와 버전
 
-`code/step04_basic_rag/requirements.txt`에 고정했다. 이 문서 작성 시점(2026-09)
-기준으로 pymilvus는 `MilvusClient`(고수준 클라이언트) API가 2.5.x/2.6.x에서
-안정적으로 제공된다. PyPI에는 pymilvus 3.0.x도 올라와 있으나, 이 문서를 쓰는
-시점에는 3.0.x가 `create_schema`/`add_field`/`prepare_index_params` 시그니처를
-그대로 유지하는지 확인하지 못했다(`[확인 필요: pymilvus 3.0.x MilvusClient API 변경 여부]`).
-그래서 요구사항 파일은 `pymilvus>=2.5,<3.0`으로 고정했다.
+`code/step04_basic_rag/requirements.txt`에 고정했다. 버전은 범위로 쓴다
+(`PROJECT-SPEC.md` 10절). `VERIFIED-FINDINGS.md` 3절: pymilvus의 `MilvusClient.create_schema`
+/ `add_field` / `prepare_index_params` 같은 이 장이 쓰는 API는 2.6.17과 3.0.1(2026-09-09
+PyPI 기준 각각 2.x 최신·전체 최신) 두 휠을 직접 풀어 비교해 **동일한 형태로 존재하는 것을
+확인했다.** `pymilvus[milvus-lite]` extra로 Milvus Lite(내장 모드)도 함께 설치된다
+(Windows는 미지원).
 
 ```
-pymilvus>=2.5,<3.0
-openai>=1.40,<2.0
+pymilvus[milvus-lite]>=2.6,<3
+openai>=3.10,<4
 fastapi>=0.115,<1.0
 uvicorn[standard]>=0.30,<1.0
-python-dotenv>=1.0,<2.0
-pydantic>=2.7,<3.0
+python-dotenv>=1.0,<2
+pydantic>=2.7,<3
 ```
 
 ### 환경 변수
@@ -267,19 +267,25 @@ python scripts/make_sample_data.py
 Milvus 스키마를 만들기 전에, 실제로 임베딩 API를 한 번 호출해 벡터 길이를
 확인하는 최소 예제부터 본다.
 
+`docagent/llm.py`는 `PROJECT-SPEC.md` 9절이 고정한 공통 인터페이스를 쓴다. 이 장에서
+처음 실제로 쓰는 함수가 `embed()`다(`EMBEDDING_MODEL`이 `Settings`에 추가되는 장이다).
+
 `code/step04_basic_rag/docagent/llm.py` (관련 부분)
 ```python
-def embed_texts(client: OpenAI, model: str, texts: list[str]) -> list[list[float]]:
+def embed(texts: list[str], *, settings: Settings | None = None) -> list[list[float]]:
     if not texts:
         return []
-    resp = client.embeddings.create(model=model, input=texts)
-    return [item.embedding for item in resp.data]
+    settings = settings or get_settings()
+    client = _client(settings)
+    resp = client.embeddings.create(model=settings.embedding_model, input=texts)
+    items = sorted(resp.data, key=lambda item: item.index)
+    return [item.embedding for item in items]
 ```
 
 이 함수로 텍스트 하나를 임베딩해보면 다음처럼 차원을 알아낼 수 있다.
 
 ```python
-vectors = embed_texts(client, "your-embedding-model-name", ["샘플 문장"])
+vectors = embed(["샘플 문장"])
 dense_dim = len(vectors[0])  # 예: 1536, 768, 384 ... 모델에 따라 다르다
 ```
 
@@ -430,7 +436,7 @@ SYSTEM_PROMPT = (
 
 
 def retrieve(..., score_threshold: float) -> RetrievalResult:
-    query_vector = embed_query(llm_client, embedding_model, question)
+    query_vector = embed([question])[0]
     hits = search_dense(milvus_client, collection_name, query_vector, top_k)
     accepted = [h for h in hits if h.score >= score_threshold]
     return RetrievalResult(hits=hits, accepted=accepted, has_evidence=bool(accepted))
@@ -450,7 +456,7 @@ def ingest():
     documents = load_documents(DOCS_DIR)
     chunks = build_chunks(documents, chunk_size_chars=..., chunk_overlap_chars=...)
     texts = [c.text for c in chunks]
-    vectors = embed_texts(_llm_client, _settings.embedding_model, texts)
+    vectors = embed(texts, settings=_settings)
     dense_dim = len(vectors[0])                      # 4.1절 — 하드코딩하지 않는다
     create_chunks_collection(_milvus_client, _settings.milvus_collection, dense_dim)
     inserted = insert_chunks(_milvus_client, _settings.milvus_collection, chunks, vectors)
@@ -471,7 +477,7 @@ def _chat_event_stream(question: str):
 
     yield events.status(events.STAGE_WRITING, "검색된 자료를 근거로 답변을 작성하는 중이다.")
     messages = build_messages(question, result.accepted)
-    for piece in chat_stream(_llm_client, _settings.chat_model, messages):
+    for piece in chat_stream(messages, settings=_settings):
         yield events.token(piece)
     yield events.done(events.FINISH_STOP)
 ```
@@ -529,14 +535,24 @@ overlap의 실제 효과다. (`chunk_size=800`에서는 모든 문서가 800자 
 
 이 확인은 이 저장소에서 실제로 실행해 통과했다(모델 서버·Milvus는 쓰지 않았다).
 
-### 모델 서버·Milvus까지 포함한 확인 (직접 실행 필요)
+### 모델 서버·Milvus까지 포함한 확인
 
-아래는 실제 서버를 띄운 상태에서 확인하는 절차다. 이 문서를 쓴 시점에는 모델
-서버와 Milvus를 실제로 띄워 실행하지 않았으므로, 아래 출력은 코드 구조상
-기대되는 형태를 보여주는 것이지 실측값이 아니다.
+아래는 실제 서버를 띄운 상태에서 확인하는 절차다. `VERIFIED-FINDINGS.md` 8절: 이
+장은 스텁 서버(`code/_tools/fake_openai_server.py`)와 Milvus Lite를 실제로 띄워
+**문서 5개 적재 → 청크 5개 생성 → 임베딩(스텁 서버의 8차원 의사 임베딩) → Milvus
+Lite 저장 → dense 검색 3건 반환**까지 확인했다. 실제 채팅·임베딩 모델 서버 대상
+실행은 검증하지 않았다 — 아래 절차는 그대로 따라 하되, 실제 모델을 쓰면
+`dense_dim`과 답변 문구가 예시와 달라진다.
+
+**모델 서버 없이 확인하기**: 채팅·임베딩을 지원하는 실제 서버가 없다면
+`code/_tools/fake_openai_server.py`를 띄우고 `.env`의 `OPENAI_BASE_URL`을 그
+주소로, `DOCAGENT_MILVUS_URI`를 `./data/milvus_demo.db`처럼 로컬 파일 경로로
+바꾼다(Milvus Lite로 동작한다). 이 조합으로 적재·검색 파이프라인 전체를 실제
+서버 없이 확인할 수 있다 — 다만 임베딩이 의미 없는 해시 기반 벡터이므로 검색
+결과의 **의미적** 적합성은 확인할 수 없다. `code/_tools/README.md` 참고.
 
 ```bash
-docker run 없이 우선 Milvus Lite로 빠르게 확인하려면:
+# Milvus Lite로 빠르게 확인하려면:
 # .env의 DOCAGENT_MILVUS_URI=./data/milvus_demo.db 로 설정한 뒤
 uvicorn docagent.app:app --reload --port 8080
 ```
@@ -545,13 +561,12 @@ uvicorn docagent.app:app --reload --port 8080
 curl -X POST http://localhost:8080/api/ingest
 ```
 
-기대하는 응답 형태:
+스텁 서버 기준으로 실제로 확인한 응답 형태(임베딩 차원은 스텁 서버가 만드는
+8차원 의사 벡터 기준이며, 실제 임베딩 모델을 쓰면 이 값이 달라진다):
 
 ```json
-{"ok": true, "documents": 5, "chunks": 5, "inserted": 5, "dense_dim": 1536}
+{"ok": true, "documents": 5, "chunks": 5, "inserted": 5, "dense_dim": 8}
 ```
-
-`dense_dim`은 실제로 쓰는 임베딩 모델에 따라 달라진다(1536은 예시일 뿐이다).
 
 ```bash
 curl -N -X POST http://localhost:8080/api/chat \
@@ -610,7 +625,65 @@ finally:
 PY
 ```
 
-### 6.3 근거 없는 질문
+### 6.3 환경 변수 이름 충돌 — `import pymilvus` 자체가 실패한다
+
+`DOCAGENT_MILVUS_URI` 대신 흔히 쓰는 이름인 `MILVUS_URI`를 그대로 환경 변수로
+export한 상태에서 이 프로젝트를 실행하면, `docagent.rag.store`가 아니라 **`import
+pymilvus` 시점에** 실패한다. `VERIFIED-FINDINGS.md` 4절에서 실제로 재현한 원인과
+오류 메시지다.
+
+```bash
+export MILVUS_URI="./data/milvus_demo.db"   # Milvus Lite용 로컬 파일 경로라고 하자
+python3 -c "import pymilvus"
+```
+
+```
+ConnectionConfigException: Illegal uri: [...], expected form 'http[s]://[user:password@]example.com[:12345]'
+```
+
+원인은 `pymilvus/settings.py`가 `MILVUS_URI = str(os.getenv("MILVUS_URI", LEGACY_URI))`로
+그 환경 변수 이름을 **자기 설정용으로 이미 예약**하고 있고, `pymilvus/orm/connections.py`가
+모듈을 임포트하는 시점에 그 값을 `http(s)://` 형식인지 검증하기 때문이다(2.6.17, 3.0.1
+동일하게 확인). Milvus Lite에 쓰는 로컬 파일 경로는 이 형식이 아니므로 여기서 즉시
+실패한다 — `docagent`가 이 URI를 실제로 쓰기도 전에, 프로세스가 `pymilvus`를
+가져오는 순간 죽는다. 그래서 이 프로젝트는 `DOCAGENT_MILVUS_URI`라는 접두사 붙은
+이름을 쓴다(`PROJECT-SPEC.md` 2절) — 겹치는 이름을 피하면 이 오류 자체가 나지 않는다.
+새 환경 변수를 만들 때는 쓰려는 라이브러리가 그 이름을 이미 읽고 있는지 먼저 확인한다.
+
+### 6.4 검색 결과에서 `hit["id"]`를 쓰면 `KeyError`가 난다
+
+`client.search(...)`가 돌려주는 각 결과 항목의 키는 `"id"`가 아니라 **컬렉션의
+기본 키(primary key) 필드 이름**이다. 이 장의 스키마는 기본 키 필드 이름을
+`pk`로 정했으므로(`PROJECT-SPEC.md` 6절), `hit["id"]`로 접근하면 실패한다.
+
+```python
+hit = results[0][0]
+print(hit["id"])   # KeyError: 'id'
+```
+
+`VERIFIED-FINDINGS.md` 5절에서 실제로 확인한 결과 항목의 키 목록은
+`['pk', 'distance', 'entity']`다. `store.search_dense`가 `hit["pk"]`로 읽는 이유가
+이것이다 — 기본 키 필드 이름을 바꾸면(예: `id`로) 이 코드도 함께 바꿔야 한다.
+
+### 6.5 새 프로세스에서는 컬렉션이 `released` 상태다
+
+`/api/ingest`로 컬렉션을 만들고 데이터를 넣은 뒤, 서버 프로세스를 껐다가 다시
+켜고 바로 `/api/chat`을 호출하면 검색이 실패한다. `VERIFIED-FINDINGS.md` 6절에서
+실제로 재현한 오류다.
+
+```
+MilvusException: (code=101, message=Collection 'docagent_chunks' is in state 'released'; call load() before search/get/query)
+```
+
+원인은 `load_collection()`의 효과가 **프로세스를 넘어 유지되지 않기** 때문이다.
+적재 스크립트(또는 `/api/ingest`를 처음 호출한 프로세스)와 재시작한 API 서버는
+서로 다른 프로세스이므로, 새 프로세스는 컬렉션이 만들어져 있다는 것만 알 뿐 메모리에
+올라와 있는 상태는 아니다. 해결은 검색 직전에 `load_collection()`을 매번 부르는
+것이다(이미 로드돼 있으면 아무 일도 하지 않으므로 비용이 크지 않다) —
+`create_chunks_collection`이 컬렉션이 이미 있을 때도 `load_collection`을 호출하는
+이유가 이것이다.
+
+### 6.6 근거 없는 질문
 
 `RETRIEVAL_SCORE_THRESHOLD`보다 낮은 점수만 나오는 질문(예: 등록한 문서와 전혀
 무관한 질문)을 보내면 `has_evidence=False`가 되어 모델을 호출하지 않고
@@ -685,16 +758,25 @@ PY
 
 > 위 milvus.io 문서는 이 세션의 네트워크 제한(WebFetch가 milvus.io를 직접 열람하지
 > 못함)으로 페이지 전체를 직접 열람하지는 못했고, 검색 결과 스니펫으로 API 형태
-> (메서드 이름, 파라미터, 코드 조각)를 교차 확인했다. 스니펫에 없던 세부 사항 —
-> `insert()`/`search()`의 정확한 반환 타입 필드명 등 — 은 `[확인 필요: pymilvus
-> MilvusClient.insert/search 반환값의 정확한 키 이름]`으로 남긴다.
+> (메서드 이름, 파라미터, 코드 조각)를 교차 확인했다. `insert()`/`search()`의 정확한
+> 반환 타입 필드명은 이후 실제로 pymilvus를 설치해 호출해 확인했다 — 6.4절 참고
+> (`search()` 결과 항목의 키는 `"id"`가 아니라 기본 키 필드 이름이다).
 
-> 검증 상태: 이 장에서 실제로 실행해 확인한 것은 (1) `scripts/make_sample_data.py`
-> 실행으로 `data/sales.csv`와 `data/docs/*.md` 생성, (2) `docagent/rag/ingest.py`의
-> `load_documents`/`build_chunks`/`chunk_text`를 실제 샘플 문서로 호출해 청크 개수와
-> overlap 동작을 확인, (3) 이 장의 모든 `.py` 파일에 대한 `python3 -m py_compile`
-> 통과다. Milvus 서버·Milvus Lite·실제 임베딩/채팅 모델 서버를 대상으로 한 실행
-> (`/api/ingest`, `/api/chat`, `create_chunks_collection`, `insert_chunks`,
-> `search_dense` 등)은 이 환경에 pymilvus·openai 패키지가 설치돼 있지 않고 접근
-> 가능한 Milvus·모델 서버도 없어 실행 검증하지 않았다. pymilvus API 시그니처는
-> 공식 문서 검색 결과로 확인했을 뿐 실제 호출로 검증하지 않았다.
+> 검증 상태: `VERIFIED-FINDINGS.md` 8절에 따라 이 장은 아래까지 **실제로 실행해**
+> 확인했다.
+>
+> - `scripts/make_sample_data.py` 실행으로 `data/sales.csv`와 `data/docs/*.md` 생성.
+> - `docagent/rag/ingest.py`의 `load_documents`/`build_chunks`/`chunk_text`를 실제
+>   샘플 문서로 호출해 청크 개수와 overlap 동작을 확인(5절 "서버 없이 확인할 수 있는
+>   부분").
+> - `code/_tools/fake_openai_server.py`(학습용 스텁 서버)와 Milvus Lite(로컬 파일
+>   기반)를 실제로 띄워 문서 5개 적재 → 청크 5개 생성 → 임베딩(8차원 의사 벡터) →
+>   Milvus Lite 저장 → `docagent.rag.search.retrieve`의 dense 검색 3건 반환까지
+>   end-to-end로 확인했다.
+> - 이 장의 모든 `.py` 파일이 `python3 -m py_compile`을 통과한다.
+>
+> **확인하지 못한 것**: 실제 임베딩·채팅 모델 서버(vLLM, Ollama, 상용 API 등)를
+> 대상으로 한 실행, `RETRIEVAL_SCORE_THRESHOLD` 같은 값의 적정성, 답변 품질, 실제
+> Docker standalone Milvus 서버(Milvus Lite가 아닌) 대상 실행은 검증하지 않았다.
+> pymilvus API 시그니처 중 스텁 서버·Milvus Lite 조합으로 실제 호출해 본 것은
+> 위 목록의 범위뿐이고, 그 밖의 API는 공식 문서·저장소 소스 비교로만 확인했다.

@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator
 
 from docagent import llm
-from docagent.config import settings
+from docagent.config import get_settings
 from docagent.tools import TOOL_SPECS, run_tool
 
 SYSTEM_PROMPT = (
@@ -66,6 +66,27 @@ ChatFn = Callable[..., dict[str, Any]]
 REPEAT_LIMIT = 3
 
 
+def _default_chat_fn(
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None = None,
+    tool_choice: str | dict[str, Any] | None = None,
+    temperature: float = 0.2,
+) -> dict[str, Any]:
+    """llm.chat()(PROJECT-SPEC.md 9절 공통 인터페이스)을 이 루프가 원래
+    쓰던 "assistant 메시지 dict" 형태로 옮겨주는 어댑터.
+
+    tool_choice는 llm.chat()의 시그니처에 없다 — tools를 주면 내부적으로
+    항상 tool_choice="auto"로 호출하므로(모델이 스스로 도구 사용 여부를
+    판단) 여기서는 인자만 받고 그대로 둔다.
+    """
+    result = llm.chat(messages, settings=get_settings(), temperature=temperature, tools=tools)
+    return {
+        "role": "assistant",
+        "content": result.text or None,
+        "tool_calls": result.tool_calls or None,
+    }
+
+
 def _normalize_args(args: dict[str, Any]) -> str:
     """반복 호출 감지용으로 인자를 정규화한 문자열로 만든다.
 
@@ -79,7 +100,7 @@ def run_agent(
     user_message: str,
     *,
     history: list[dict[str, Any]] | None = None,
-    chat_fn: ChatFn = llm.chat_completion,
+    chat_fn: ChatFn = _default_chat_fn,
     max_steps: int | None = None,
     max_seconds: int | None = None,
 ) -> Iterator[AgentEvent]:
@@ -89,7 +110,7 @@ def run_agent(
         user_message: 이번 턴의 사용자 입력.
         history: 이전 턴의 messages 리스트(without system prompt 반복 추가 방지용).
             None이면 새 대화로 취급한다.
-        chat_fn: 모델 호출 함수. 기본은 llm.chat_completion이며,
+        chat_fn: 모델 호출 함수. 기본은 _default_chat_fn(llm.chat 어댑터)이며,
             테스트에서는 실제 서버 없이 가짜 함수로 바꿔 끼운다.
         max_steps, max_seconds: 생략하면 config.settings 값을 쓴다.
 
@@ -98,8 +119,8 @@ def run_agent(
         마지막 이벤트는 항상 kind == "done"이다.
     """
 
-    max_steps = max_steps if max_steps is not None else settings.max_agent_steps
-    max_seconds = max_seconds if max_seconds is not None else settings.max_agent_seconds
+    max_steps = max_steps if max_steps is not None else get_settings().max_agent_steps
+    max_seconds = max_seconds if max_seconds is not None else get_settings().max_agent_seconds
 
     messages: list[dict[str, Any]] = list(history) if history else [
         {"role": "system", "content": SYSTEM_PROMPT}
@@ -202,7 +223,7 @@ def run_agent(
 def run_agent_collect(
     user_message: str,
     *,
-    chat_fn: ChatFn = llm.chat_completion,
+    chat_fn: ChatFn = _default_chat_fn,
     max_steps: int | None = None,
     max_seconds: int | None = None,
 ) -> AgentRunResult:

@@ -1,6 +1,12 @@
-fastapi==0.115.0
-uvicorn[standard]==0.30.6
-httpx==0.27.2
-pydantic==2.9.2
-python-dotenv==1.0.1
-pytest==8.3.3
+# 3단계에서 실제로 쓰는 패키지만 담는다.
+# 버전은 범위로 쓴다(PROJECT-SPEC.md 10절 기준선, 2026-09-09 실측).
+# 이전 단계에 이미 있던 패키지(fastapi, uvicorn, httpx, python-dotenv, openai)는
+# 같은 범위를 그대로 쓴다.
+
+fastapi>=0.115,<1.0            # 웹 프레임워크 (POST /chat, text/event-stream)
+uvicorn[standard]>=0.30,<1.0   # ASGI 서버
+openai>=3.10,<4                # OpenAI 호환 SDK (docagent/llm.py)
+httpx>=0.28,<0.29               # openai SDK의 하위 전송 계층 점검, 테스트 클라이언트용
+pydantic>=2.7,<3               # 도구 인자 검증(docagent/tools.py)
+python-dotenv>=1.0,<2          # .env 파일에서 환경 변수 로딩
+pytest>=8.0,<9                 # 단위 테스트 실행용

@@ -69,6 +69,41 @@ Sparse 벡터의 값으로 채운 뒤, 질의와 문서 Sparse 벡터 사이의 
 것을 가리킨다 — Sparse는 벡터의 형태를, BM25는 그 벡터로 계산하는 점수
 공식을 말한다.
 
+### 2-2-1. 한국어 문서에서 BM25가 겪는 제약 (Milvus Lite 실측)
+
+BM25는 "토큰이 얼마나 겹치는가"로 점수를 매기므로, 그 전에 텍스트를 토큰으로
+쪼개는 분석기(analyzer, tokenizer)가 한국어를 얼마나 잘 다루는지에 결과가
+크게 좌우된다. `VERIFIED-FINDINGS.md` 7절: `milvus-lite` 3.2.1 + `pymilvus`
+2.6.17에서 `analyzer_params`의 tokenizer를 바꿔 직접 실험한 결과다.
+
+| 시도한 값 | 결과 |
+| --- | --- |
+| 지정하지 않음(기본 `standard`) | 컬렉션 생성·검색 동작 |
+| `{"type": "korean"}` | `MilvusException(code=6): unknown tokenizer type: 'korean' (supported: 'standard', 'jieba')` |
+| `{"tokenizer": "lindera", "dict_kind": "ko-dic"}` | 같은 오류 |
+| `{"tokenizer": "icu"}` | 같은 오류 |
+
+즉 **Milvus Lite의 BM25 tokenizer는 `standard`와 `jieba`뿐이다.** `korean`,
+`lindera`(`ko-dic`), `icu` 같은 한국어 형태소 분석기는 이 문서 작성 시점의
+Milvus Lite에서 이름 자체를 인식하지 못해 컬렉션 생성 단계에서 바로 실패한다.
+`[확인 필요: Milvus standalone(Docker)에서는 지원 tokenizer 목록이 더 넓은지]` —
+이 장은 Milvus Lite에서만 확인했고 standalone은 확인하지 않았다.
+
+이 장의 코드가 실제로 쓰는 `standard` tokenizer는 한국어를 **공백 단위로만**
+자른다 — 형태소나 어절 경계를 이해하지 못한다. 그래서 질의 "매출 감소"가 본문의
+"매출이 크게 감소했다"와는 토큰이 일치하지 않는다("매출"과 "매출이"가 다른
+토큰이라서다). `VERIFIED-FINDINGS.md` 7절 실측에서 같은 질의에 대해 dense는
+3건을 반환한 반면 sparse는 1건만 반환했다 — 재현율(recall) 차이가 실제로
+관찰된다.
+
+**이 장에서의 대응**: 없는 성능을 있다고 쓰지 않는다. 한국어 문서에서는
+하이브리드 검색의 이득이 **주로 dense 쪽에서** 나온다 — 조사·어미가 붙어도
+의미가 비슷하면 dense가 잡아내기 때문이다. Sparse(BM25)는 제품명·모델명·
+`G3`/`X` 같은 영문·숫자 코드처럼 **공백으로 이미 분리돼 있는 고유 토큰**에서
+그 효과가 크다 — 질문에 "게이밍 마우스 G3"가 그대로 들어가면 `standard`
+tokenizer로도 "G3" 토큰이 정확히 일치하기 때문이다. 사람이 쓰는 자연어 조사·
+어미가 붙은 한국어 문장 전체를 sparse가 정확히 받아치리라고 기대하지 않는다.
+
 ### 2-3. 키워드 검색과 의미 검색의 차이
 
 | | 키워드 검색 (BM25/Sparse) | 의미 검색 (Dense) |
@@ -206,14 +241,17 @@ Milvus나 모델 서버 없이도 동작을 확인할 수 있어서 `tests/test_
 
 ### 패키지와 버전
 
-`code/step05_hybrid_rag/requirements.txt`를 그대로 쓴다. 이 문서 작성
-시점(2026-09) 기준 PyPI의 pymilvus 최신은 3.0.1이다. 이 장의 pymilvus API
+`code/step05_hybrid_rag/requirements.txt`를 그대로 쓴다. 버전은 범위로 쓴다
+(`PROJECT-SPEC.md` 10절 — `pymilvus[milvus-lite]>=2.6,<3`). 이 장의 pymilvus API
 (`MilvusClient.create_schema`, `Function`/`FunctionType.BM25`,
 `AnnSearchRequest`, `RRFRanker`, `WeightedRanker`,
 `MilvusClient.hybrid_search`)는 milvus-io/pymilvus 저장소 소스와 예제
 스크립트로 확인했다 — 정확한 파일과 URL은 이 문서 맨 아래 "참고 문서"에
-있다. **[확인 필요: 실제 사용할 Milvus 서버가 BM25 Function을 지원하는
-버전인지는 서버 쪽 릴리스 노트로 별도 확인한다.]**
+있다. `VERIFIED-FINDINGS.md` 3절: 2026-09-09 시점 PyPI의 pymilvus 2.x 최신
+(2.6.17)과 전체 최신(3.0.1) 두 휠을 직접 풀어 비교한 결과, 위 API들은 **두
+버전에서 동일한 형태로 존재한다** — 이 장의 코드는 둘 중 어느 쪽을 설치해도
+같은 형태로 쓸 수 있다. **[확인 필요: 실제 사용할 Milvus 서버가 BM25 Function을
+지원하는 버전인지는 서버 쪽 릴리스 노트로 별도 확인한다.]**
 
 ### 환경 변수
 
@@ -308,7 +346,7 @@ schema.add_function(bm25_function)
 ```python
 # code/step05_hybrid_rag/docagent/rag/store.py (발췌)
 def migrate_add_sparse(dense_dim: int, *, batch_size: int = 200) -> int:
-    old_name = settings.milvus_collection
+    old_name = get_settings().milvus_collection
     tmp_name = f"{old_name}__migrating"
 
     client = get_client()
@@ -359,7 +397,7 @@ API가 정확히 어느 Milvus 서버 버전부터 지원되는지, 기존 행�
 def sparse_search(query: str, *, limit: int = 5, filter_expr: str = "") -> list[dict]:
     client = get_client()
     results = client.search(
-        settings.milvus_collection,
+        get_settings().milvus_collection,
         data=[query],                      # 원문 문자열을 그대로 넘긴다. 임베딩하지 않는다.
         anns_field="sparse",
         search_params={"metric_type": "BM25", "params": {}},
@@ -372,7 +410,7 @@ def sparse_search(query: str, *, limit: int = 5, filter_expr: str = "") -> list[
 
 Sparse 검색은 질의를 임베딩하지 않는다 — BM25 Function이 질의 원문도
 analyzer로 토큰화해서 바로 점수를 계산하기 때문이다. Dense 검색은 4단계와
-같은 방식으로 `embed_texts`로 질의를 임베딩한 뒤 `anns_field="dense"`,
+같은 방식으로 `embed`로 질의를 임베딩한 뒤 `anns_field="dense"`,
 `metric_type="COSINE"`으로 검색한다(`dense_search` 함수, 코드 생략 —
 `search.py` 전체를 본다).
 
@@ -390,7 +428,7 @@ def hybrid_search(query: str, *, limit: int = 5, filter_expr: str = "",
     candidate_limit = candidate_limit or max(limit * 4, 20)
 
     dense_req = AnnSearchRequest(
-        data=embed_texts([query]), anns_field="dense",
+        data=embed([query]), anns_field="dense",
         param={"metric_type": "COSINE", "params": {}},
         limit=candidate_limit, expr=filter_expr,
     )
@@ -403,7 +441,7 @@ def hybrid_search(query: str, *, limit: int = 5, filter_expr: str = "",
     rerank = RRFRanker(k=rrf_k) if ranker == "rrf" else WeightedRanker(dense_weight, sparse_weight)
 
     results = client.hybrid_search(
-        settings.milvus_collection, [dense_req, sparse_req], rerank,
+        get_settings().milvus_collection, [dense_req, sparse_req], rerank,
         limit=limit, output_fields=OUTPUT_FIELDS,
     )
     return [_to_hit(hit) for hit in results[0]] if results else []
@@ -467,9 +505,15 @@ URL은 오직 `by_label[label]`(이번 검색 결과)에서 가져온
 ```python
 # code/step05_hybrid_rag/docagent/app.py (발췌)
 @app.post("/chat")
-async def chat(req: ChatRequest) -> StreamingResponse:
+async def chat_endpoint(req: ChatRequest) -> StreamingResponse:
     return StreamingResponse(_chat_stream(req), media_type="text/event-stream")
 ```
+
+라우트 핸들러 이름을 `chat_endpoint`로 짓는다 — `docagent.llm.chat`(4단계와 같은
+이름의 공통 인터페이스, `PROJECT-SPEC.md` 9절)을 이 모듈이 임포트해서 쓰는데,
+핸들러를 `chat`으로 지으면 그 이름이 모듈 전역에서 `llm.chat`을 가려버려서
+`_chat_stream` 안의 모델 호출이 이 라우트 핸들러 자신을 가리키게 되는 버그가
+생긴다.
 
 `_chat_stream`은 `status(retrieving)` → 하이브리드 검색 → `status(analyzing)`
 → 모델 호출(비-스트리밍) → `status(verifying)` + 인용 검증 →
@@ -489,7 +533,7 @@ async def chat(req: ChatRequest) -> StreamingResponse:
 async def view_source(doc_id: str, page: int = 0, chunk: int = 0) -> HTMLResponse:
     chunk_id = make_chunk_id(doc_id, page, chunk)
     rows = get_client().query(
-        settings.milvus_collection, filter=f'pk == "{chunk_id}"',
+        get_settings().milvus_collection, filter=f'pk == "{chunk_id}"',
         output_fields=["text", "doc_title"],
     )
     chunk_text = rows[0]["text"] if rows else ""
@@ -535,7 +579,66 @@ python -m scripts.compare_search "2분기 노트북 매출이 둔화된 이유�
 "판매 감소"처럼 표현이 달라도 비슷한 청크를 찾는지, Hybrid가 두 결과를
 어떻게 섞는지.
 
+**모델 서버 없이 확인하기**: `code/_tools/fake_openai_server.py`(학습용 스텁 서버)와
+Milvus Lite(`DOCAGENT_MILVUS_URI`를 로컬 파일 경로로) 조합으로 위 적재·검색
+파이프라인 전체를 실제 서버 없이 확인할 수 있다 — `VERIFIED-FINDINGS.md` 8절:
+이 조합으로 dense/sparse/hybrid(RRF)/hybrid(가중치) 네 방식 모두 결과를
+반환하는 것을 실제로 확인했다. 다만 임베딩이 해시 기반 의사 벡터라 Dense
+결과의 의미적 적합성은 확인할 수 없고, `standard` tokenizer의 한국어 제약
+(2-2-1절)은 스텁 서버와 무관하게 Milvus Lite 자체의 제약이므로 실제 서버로
+바꿔도 그대로 남는다. `code/_tools/README.md` 참고.
+
 ## 6. 실패 상황 실습
+
+**환경 변수 이름 충돌 — `import pymilvus` 자체가 실패하는 경우.**
+`DOCAGENT_MILVUS_URI` 대신 `MILVUS_URI`를 export한 채로 실행하면
+`docagent`가 이 값을 쓰기도 전에 `import pymilvus` 시점에서 실패한다
+(`VERIFIED-FINDINGS.md` 4절, 실제로 재현했다).
+
+```bash
+export MILVUS_URI="./data/milvus_demo.db"
+python3 -c "import pymilvus"
+```
+
+```
+ConnectionConfigException: Illegal uri: [./data/milvus_demo.db], expected form 'http[s]://[user:password@]example.com[:12345]'
+```
+
+원인은 `pymilvus/settings.py`가 `MILVUS_URI` 환경 변수 이름을 자기 설정용으로
+이미 예약하고 있고, `pymilvus/orm/connections.py`가 모듈을 임포트하는 시점에
+그 값을 `http(s)://` 형식인지 검증하기 때문이다(2.6.17, 3.0.1 동일). 이
+프로젝트가 `DOCAGENT_MILVUS_URI`처럼 접두사 붙은 이름을 쓰는 이유가 이것이다
+(`PROJECT-SPEC.md` 2절) — 새 환경 변수를 만들 때는 쓰려는 라이브러리가 그
+이름을 이미 읽고 있는지 먼저 확인한다.
+
+**검색 결과에서 `hit["id"]`를 쓰면 `KeyError`가 나는 경우.** `client.search(...)`
+결과 항목의 키는 `"id"`가 아니라 컬렉션의 기본 키 필드 이름이다. 이 장의
+스키마는 기본 키 필드 이름을 `pk`로 정했으므로(`PROJECT-SPEC.md` 6절),
+`hit["id"]`로 읽으면 실패한다.
+
+```python
+hit = results[0][0]
+print(hit["id"])   # KeyError: 'id'
+```
+
+`VERIFIED-FINDINGS.md` 5절에서 실제로 확인한 결과 항목의 키 목록은
+`['pk', 'distance', 'entity']`다 — `search.py`의 `_to_hit`이 `raw[PK_FIELD]`
+(`PK_FIELD = "pk"`)로 읽는 이유가 이것이다.
+
+**새 프로세스에서는 컬렉션이 `released` 상태인 경우.** 적재 스크립트로
+컬렉션을 만들고 데이터를 넣은 뒤, API 서버 프로세스를 새로 띄우고 바로
+검색하면 실패한다(`VERIFIED-FINDINGS.md` 6절, 실제로 재현했다).
+
+```
+MilvusException: (code=101, message=Collection 'docagent_chunks' is in state 'released'; call load() before search/get/query)
+```
+
+원인은 `load_collection()`의 효과가 프로세스를 넘어 유지되지 않기 때문이다.
+적재 스크립트와 API 서버는 서로 다른 프로세스이므로, 새 프로세스는 컬렉션이
+존재한다는 것만 알 뿐 메모리에 올라와 있지는 않다. 이 장의 `search.py`가
+검색 직전에 `ensure_loaded()`(`client.load_collection(...)`)를 매번 부르는
+이유가 이것이다 — 이미 로드돼 있으면 아무 일도 하지 않으므로 매번 불러도
+비용이 크지 않다.
 
 **모델이 존재하지 않는 인용 번호를 만든 경우.** 프롬프트를 일부러 훼손해
 재현한다 — 시스템 프롬프트에서 "컨텍스트에 없는 내용은 모른다고 답한다"
@@ -552,7 +655,7 @@ python -m pytest tests/test_citations.py -k fake_citation -v
 
 **임베딩 엔드포인트를 지원하지 않는 모델 서버.** `EMBEDDING_MODEL`을
 서버에 없는 이름으로 바꾸거나 `/embeddings` 자체를 지원하지 않는 서버를
-가리키면 `embed_texts`가 `LLMError`를 던진다(`docagent/llm.py`의
+가리키면 `embed`가 `LLMError`를 던진다(`docagent/llm.py`의
 `raise LLMError(... "서버가 /embeddings 엔드포인트를 지원하는지 먼저
 확인한다.")`). 이 경우 Dense 검색과 Hybrid 검색은 실패하지만 Sparse
 검색(`sparse_search`)은 임베딩을 쓰지 않으므로 그대로 동작한다 — 임베딩
@@ -631,11 +734,24 @@ RAG 파이프라인과 3단계의 도구 호출 에이전트를 LangChain으로 
   - <https://milvus.io/docs/bm25-function.md>
   - <https://milvus.io/docs/full-text-search.md>
 
-> 검증 상태: 이 장의 코드는 `python3 -m py_compile`로 전체 문법을
-> 확인했다. `code/step05_hybrid_rag/tests/test_citations.py`(인용 검증)와
-> `tests/test_rrf.py`(RRF·가중치 결합 함수)는 Milvus·모델 서버 없이 실제로
-> 실행해 17개 테스트가 모두 통과하는 것을 확인했다. 그 외
-> Milvus 컬렉션 생성·마이그레이션·검색, `/chat`·`/sources` 엔드포인트의
-> 실제 서버 대상 실행은 검증하지 않았다. pymilvus API 시그니처는 위
-> "참고 문서"의 소스 코드로 확인했지만 실제 Milvus 서버 버전별 동작
+> 검증 상태: `VERIFIED-FINDINGS.md` 8절에 따라 이 장은 아래까지 **실제로 실행해**
+> 확인했다.
+>
+> - 이 장의 모든 `.py` 파일이 `python3 -m py_compile`을 통과한다.
+> - `code/step05_hybrid_rag/tests/test_citations.py`(인용 검증)와
+>   `tests/test_rrf.py`(RRF·가중치 결합 함수)를 Milvus·모델 서버 없이 실제로
+>   실행해 17개 테스트가 모두 통과했다.
+> - `code/_tools/fake_openai_server.py`(학습용 스텁 서버)와 Milvus Lite를 실제로
+>   띄워 dense + sparse(BM25 Function) 필드가 있는 컬렉션을 생성하고, 문서를
+>   적재한 뒤 dense/sparse/hybrid(RRF)/hybrid(가중치) 네 가지 검색 방식 모두
+>   결과를 반환하는 것을 end-to-end로 확인했다.
+> - 한국어 BM25 tokenizer 제약(2-2-1절: `korean`/`lindera`/`icu` 미지원, `standard`
+>   만 지원)은 Milvus Lite에 대고 직접 실험해 확인했다.
+>
+> **확인하지 못한 것**: 실제 임베딩·채팅 모델 서버 대상 실행, `/chat`·`/sources`
+> 엔드포인트를 실제 브라우저로 여는 것, `scripts/migrate_add_sparse.py`의 실제
+> 실행(4단계 컬렉션에서 시작하는 마이그레이션 경로), Milvus Lite가 아닌 Docker
+> standalone Milvus 서버 대상 실행, 서버 버전별 BM25 Function 지원 차이는
+> 검증하지 않았다. pymilvus API 시그니처는 위 "참고 문서"의 소스 코드 비교와
+> 이번 Milvus Lite 실행으로 확인했지만, 그 밖의 실제 Milvus 서버 버전별 동작
 > 차이는 확인하지 못했다.

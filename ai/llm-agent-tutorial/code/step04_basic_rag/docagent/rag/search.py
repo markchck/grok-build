@@ -16,9 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from openai import OpenAI
-
-from docagent.llm import embed_query
+from docagent.llm import embed
 from docagent.rag.store import SearchHit, search_dense
 from pymilvus import MilvusClient
 
@@ -45,13 +43,11 @@ class RetrievalResult:
 def retrieve(
     milvus_client: MilvusClient,
     collection_name: str,
-    llm_client: OpenAI,
-    embedding_model: str,
     question: str,
     top_k: int,
     score_threshold: float,
 ) -> RetrievalResult:
-    query_vector = embed_query(llm_client, embedding_model, question)
+    query_vector = embed([question])[0]
     hits = search_dense(milvus_client, collection_name, query_vector, top_k)
     accepted = [h for h in hits if h.score >= score_threshold]
     return RetrievalResult(hits=hits, accepted=accepted, has_evidence=bool(accepted))

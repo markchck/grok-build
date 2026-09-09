@@ -75,6 +75,10 @@ APP_BASE_URL=http://localhost:8080
 REQUEST_TIMEOUT_SECONDS=60
 MAX_AGENT_STEPS=8
 MAX_AGENT_SECONDS=120
+
+# 8단계부터 사용
+MAX_AGENT_TOKENS=4000
+DOCAGENT_STATE_DB=./data/hitl_state.db
 ```
 
 새 환경 변수가 필요한 장은 위 목록에 **추가만** 하고 기존 이름을 바꾸지 않는다.
@@ -104,7 +108,7 @@ MAX_AGENT_SECONDS=120
 | `sources` | `{"items":[{"id","doc","page","url","snippet"}]}` | 근거 목록 |
 | `approval_request` | `{"id","action","args","reason"}` | 사용자 승인 요청 |
 | `error` | `{"code","message"}` | 오류 |
-| `done` | `{"finish_reason":"..."}` | 종료 |
+| `done` | `{"finish_reason":"...", "partial"?:{...}}` | 종료. `partial`은 8단계에서 추가한 선택 필드로, 한도 초과 등으로 중간에 멈췄을 때의 부분 결과(`text`, `steps_used`, `tokens_used`, `tokens_estimated`)를 담는다. 기존 필드(`finish_reason`)는 그대로이므로 이 필드를 모르는 이전 단계 클라이언트도 그대로 동작한다 |
 
 `status.stage` 값도 고정한다: `planning`, `retrieving`, `analyzing`, `verifying`, `writing`.
 
@@ -139,7 +143,7 @@ MAX_AGENT_SECONDS=120
 - 최대 실행 시간: `MAX_AGENT_SECONDS`
 - 같은 `(도구 이름, 정규화한 인자)` 조합이 3회 반복되면 중단한다.
 - 중단 시 `error` 이벤트가 아니라 `done` 이벤트에 `finish_reason`을 넣고 부분 결과를 함께 반환한다.
-  `finish_reason` 값: `stop`, `max_steps`, `timeout`, `repeated_tool_call`, `no_progress`, `rejected_by_user`, `cancelled`.
+  `finish_reason` 값: `stop`, `max_steps`, `timeout`, `repeated_tool_call`, `no_progress`, `rejected_by_user`, `cancelled`, `token_budget`(8단계에서 추가 — 누적 토큰 예산 초과. 기존 값 중 아무것도 이 의미를 담지 못해 새로 추가했다).
 
 ## 8. 모델 서버 기능 확인
 
@@ -190,7 +194,20 @@ def chat(messages, *, settings=None, temperature=0.2, max_tokens=1024,
 def chat_stream(messages, *, settings=None, temperature=0.2, max_tokens=1024) -> Iterator[str]: ...
 def chat_json(messages, *, schema_name, json_schema, settings=None, temperature=0.0) -> dict: ...
 def embed(texts: list[str], *, settings=None) -> list[list[float]]: ...   # 4단계부터
+
+# 비동기 변형 (2단계부터). 이름은 앞에 a를 붙인다.
+async def achat(messages, *, settings=None, temperature=0.2, max_tokens=1024,
+                tools=None, response_format=None) -> ChatResult: ...
+def achat_stream(messages, *, settings=None, temperature=0.2,
+                 max_tokens=1024) -> AsyncIterator[str]: ...
 ```
+
+**동기와 비동기를 둘 다 두는 이유**: CLI와 스크립트, 단위 테스트는 동기 호출이 읽기 쉽다.
+반대로 FastAPI 엔드포인트는 비동기여야 한다 — 클라이언트가 연결을 끊었을 때
+**모델 서버로 가는 호출까지 실제로 취소**하려면 `AsyncOpenAI`로 열린 스트림을 이벤트 루프가
+직접 닫을 수 있어야 하기 때문이다. 동기 제너레이터를 별도 스레드에서 돌리는 우회는
+조각 전달은 되지만 그 스레드를 밖에서 끊을 수 없어 취소가 반쪽이 된다.
+그래서 **2단계 이후 서버 코드(app.py, 그래프 노드)는 `achat`/`achat_stream`을 쓴다.**
 
 - `settings=None`이면 `get_settings()`를 쓴다. 테스트는 `settings=`로 주입한다.
 - 내부 구현은 `openai` SDK를 쓴다. **예외는 1단계뿐이다.** 1단계는 HTTP 계층을 가르치기 위해

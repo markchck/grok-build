@@ -166,13 +166,22 @@ Chat Completions 형식의 요청은 대화를 하나의 배열로 표현한다.
 `code/step01_raw_api/requirements.txt`. 버전은 2026-09-09 기준으로 PyPI에서 확인한 값이다.
 
 ```
-httpx>=0.28.1,<0.29
-openai>=3.10.0,<4.0
-python-dotenv>=1.0.1,<2.0
+httpx>=0.28,<0.29
+openai>=3.10,<4
+python-dotenv>=1.0,<2
 ```
 
 `httpx`는 raw HTTP 호출에, `openai`는 SDK 호출에, `python-dotenv`는 `.env` 파일에서 환경 변수를
-읽어 오는 데 쓴다.
+읽어 오는 데 쓴다. 이후 장(2~5단계)의 `requirements.txt`도 같은 범위를 그대로 쓴다
+(`PROJECT-SPEC.md` 10절).
+
+`openai` 패키지 자체의 의존성 하나는 헷갈리기 쉬우니 미리 짚어 둔다. `openai` 3.x는 HTTP 전송
+계층으로 `httpx`가 아니라 **`httpx2`**(`>=2.7.0,<3`)에 의존한다 — `pip install openai`를 하면
+`httpx2`가 함께 설치된다. 이 장이 raw HTTP 호출에 직접 쓰는 `httpx`(0.28.1)와 `openai`가 내부적으로
+쓰는 `httpx2`(2.12.0)는 이름 자체가 다른 별개의 패키지라서 같은 환경에 설치돼도 버전 충돌이
+나지 않는다. 즉 이 장의 `raw_*` 함수와 `openai` SDK 경로는 겉보기엔 "같은 HTTP 라이브러리를
+쓰는 것 같지만" 실제로는 서로 다른 두 패키지를 쓴다. 2026-09-09 기준 PyPI에서 실제로 설치해
+확인한 값이다(`VERIFIED-FINDINGS.md` 1절).
 
 ### 환경 변수
 
@@ -353,7 +362,7 @@ def _make_client(settings, max_retries=2):
         max_retries=max_retries,
     )
 
-def sdk_chat_completion(settings, messages, *, temperature=0.2, max_tokens=512):
+def chat(settings, messages, *, temperature=0.2, max_tokens=512):
     client = _make_client(settings)
     completion = client.chat.completions.create(
         model=settings.chat_model,
@@ -363,7 +372,7 @@ def sdk_chat_completion(settings, messages, *, temperature=0.2, max_tokens=512):
     )
     return completion.choices[0].message.content
 
-def sdk_chat_completion_stream(settings, messages, *, temperature=0.2, max_tokens=512):
+def chat_stream(settings, messages, *, temperature=0.2, max_tokens=512):
     client = _make_client(settings)
     stream = client.chat.completions.create(
         model=settings.chat_model, messages=messages,
@@ -395,7 +404,7 @@ SDK가 대신 해 주지 **않는** 것: 서버가 실제로 어떤 기능을 �
 `code/step01_raw_api/docagent/llm.py` (일부)
 
 ```python
-def sdk_chat_completion_json_schema(settings, messages, *, schema_name, json_schema, temperature=0.0):
+def chat_json(settings, messages, *, schema_name, json_schema, temperature=0.0):
     client = _make_client(settings)
     completion = client.chat.completions.create(
         model=settings.chat_model,
@@ -428,7 +437,7 @@ while True:
         break
     history.append({"role": "user", "content": question})
 
-    result = sdk_chat_completion(settings, history, temperature=args.temperature, max_tokens=args.max_tokens)
+    result = chat(settings, history, temperature=args.temperature, max_tokens=args.max_tokens)
     print(f"assistant> {result.text}")
     history.append({"role": "assistant", "content": result.text})
 ```
@@ -471,6 +480,18 @@ python -m docagent.cli --backend raw --stream   # httpx, 스트리밍
   이전 턴을 참조한 답이 나오면 `messages` 배열이 제대로 누적되고 있다는 뜻이다.
 - `--max-tokens`를 아주 작게(예: `--max-tokens 8`) 주고 긴 답이 필요한 질문을 하면, 답이 중간에
   끊기고(일반 응답 기준) 내부적으로 `finish_reason`이 `"length"`로 온다.
+
+**모델 서버 없이 확인하기**: 실제 모델 서버가 아직 없다면 `code/_tools/fake_openai_server.py`
+(학습용 OpenAI 호환 스텁 서버)를 대신 띄워 위 명령을 그대로 실행할 수 있다.
+
+```bash
+python code/_tools/fake_openai_server.py --port 8111
+# 다른 터미널에서 OPENAI_BASE_URL=http://127.0.0.1:8111/v1 등을 .env에 넣고 위 명령을 실행한다.
+```
+
+이 스텁 서버로 확인할 수 있는 것은 요청 형식과 응답 파싱 경로(스트리밍 조각, 도구 호출,
+오류·타임아웃 처리)가 코드대로 도는지까지다. 답변 품질이나 실제 서버의 기능 지원 범위는
+확인할 수 없다 — `code/_tools/README.md`에 이 서버가 확인할 수 있는 것과 없는 것이 정리돼 있다.
 
 ## 6. 실패 상황 실습
 
@@ -520,17 +541,17 @@ REQUEST_TIMEOUT_SECONDS=1 python -m docagent.cli --backend raw
 ```
 
 서버 응답이 1초 안에 오지 않으면 `httpx.TimeoutException`이 발생하고, `docagent.llm`은 이를
-`LLMCallError`로 감싸 CLI에 `[오류] 1.0초 안에 응답이 오지 않았다 (재시도 2회 모두 실패).`처럼
+`LLMError`로 감싸 CLI에 `[오류] 1.0초 안에 응답이 오지 않았다 (재시도 2회 모두 실패).`처럼
 표시한다. `--backend sdk`로 실행하면 `openai.APITimeoutError`가 같은 역할을 한다. 프로그램이
 멈추지 않고 사용자에게 원인을 알려준 뒤 다음 질문을 받을 준비를 하는지 확인한다(`docagent/cli.py`의
-`run_once` 호출을 감싼 `try/except LLMCallError`).
+`run_once` 호출을 감싼 `try/except LLMError`).
 
 ### 6.3 잘못된 모델 이름으로 400 오류 발생시키기
 
 `.env`의 `CHAT_MODEL`을 서버에 등록되지 않은 이름(예: `no-such-model`)으로 바꾸고 실행한다.
 대부분의 서버는 `404`(모델 없음) 또는 `400`(잘못된 모델 이름)을 반환한다. 이 오류는 몇 번을
-재시도해도 결과가 같으므로, `raw_chat_completion`과 `sdk_chat_completion` 모두 재시도하지 않고
-즉시 `LLMCallError`로 실패를 알린다. 6.2절의 타임아웃(재시도 후 실패)과 이 경우(즉시 실패)를
+재시도해도 결과가 같으므로, `raw_chat_completion`과 `chat` 모두 재시도하지 않고
+즉시 `LLMError`로 실패를 알린다. 6.2절의 타임아웃(재시도 후 실패)과 이 경우(즉시 실패)를
 로그 메시지로 구분할 수 있는지 확인한다.
 
 ### 6.4 API 키 누락 확인하기
@@ -547,13 +568,13 @@ REQUEST_TIMEOUT_SECONDS=1 python -m docagent.cli --backend raw
    `--temperature 0`과 `--temperature 1.2`로 각각 3번씩 실행해 결과가 얼마나 달라지는지
    비교한다. 완료 기준: 낮은 temperature에서 답이 거의 똑같이 반복되고, 높은 temperature에서
    매번 다른 답이 나오는 것을 직접 확인한다.
-2. **재시도 횟수 조정**: `sdk_chat_completion`을 호출하는 부분에서 `_make_client`의
+2. **재시도 횟수 조정**: `chat`을 호출하는 부분에서 `_make_client`의
    `max_retries`를 `0`으로 바꿔 보고, 서버를 잠깐 내린 상태(또는 잘못된 포트로 `OPENAI_BASE_URL`을
    바꾼 상태)에서 실행해 오류가 얼마나 빨리 나는지 비교한다. 힌트: `max_retries=2`일 때와
    `max_retries=0`일 때 오류가 나기까지 걸리는 시간 차이를 초시계로 재 본다.
 3. **json_object로 데이터 추출해 보기**: 자유 문장("서울 강남구, 3억 5천만 원짜리 24평 아파트")을
    입력받아 `{"district": "...", "price_won": ..., "area_pyeong": ...}` 형태의 JSON으로 뽑아내는
-   작은 스크립트를 `docagent/llm.py`의 `sdk_chat_completion` 대신 `response_format={"type":
+   작은 스크립트를 `docagent/llm.py`의 `chat` 대신 `response_format={"type":
    "json_object"}`를 써서 만든다. 완료 기준: 최소 5개의 서로 다른 문장에 대해 유효한 JSON이
    나오는지 `json.loads`로 검증한다. 서버가 `json_object`도 지원하지 않는다면
    `scripts/check_server_features.py` 결과를 근거로 그 사실을 기록하고, 대신 "JSON으로만
@@ -647,10 +668,10 @@ REQUEST_TIMEOUT_SECONDS=1 python -m docagent.cli --backend raw
 > - `code/step01_raw_api/requirements.txt`를 새 가상환경에 설치해 의존성이 실제로 해결되는 것을
 >   확인했다(설치된 버전: `openai` 3.10.0, `httpx` 0.28.1, `httpx2` 2.12.0, `python-dotenv` 1.2.3).
 > - `code/_tools/fake_openai_server.py`(학습용 OpenAI 호환 스텁 서버)를 띄우고
->   `raw_chat_completion`, `raw_chat_completion_stream`, `sdk_chat_completion`,
->   `sdk_chat_completion_stream`, `sdk_chat_completion_json_schema` 다섯 경로가 모두 정상 응답을
+>   `raw_chat_completion`, `raw_chat_completion_stream`, `chat`,
+>   `chat_stream`, `chat_json` 다섯 경로가 모두 정상 응답을
 >   반환하는 것을 확인했다.
-> - `model=bad-model`로 HTTP 400을 유발해 raw 경로와 SDK 경로가 모두 `LLMCallError`로 변환하는
+> - `model=bad-model`로 HTTP 400을 유발해 raw 경로와 SDK 경로가 모두 `LLMError`로 변환하는
 >   것을 확인했다.
 > - `scripts/check_server_features.py`를 스텁 서버에 대고 실행해 5개 항목이 모두 판정되는 것을
 >   확인했다.

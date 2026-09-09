@@ -1,0 +1,23 @@
+# 이 단계에서 실제로 쓰는 패키지만 나열한다.
+# 버전은 범위로 쓴다(PROJECT-SPEC.md 10절). 이전 단계에 이미 있던 패키지(openai,
+# fastapi, uvicorn, python-dotenv, pydantic, httpx, pymilvus)는 같은 범위를 그대로 쓴다.
+
+pymilvus[milvus-lite]>=2.6,<3    # Milvus 클라이언트 + Milvus Lite(5단계와 동일)
+
+openai>=3.10,<4                   # OpenAI 호환 SDK 호출(docagent/llm.py, 5단계와 동일)
+
+fastapi>=0.115,<1.0                # 웹 프레임워크
+uvicorn[standard]>=0.30,<1.0       # ASGI 서버
+python-dotenv>=1.0,<2              # .env 파일에서 환경 변수 로딩
+pydantic>=2.7,<3                   # 요청 바디 검증(ChatRequest 등)
+httpx>=0.28,<0.29                   # 테스트·스크립트에서의 보조 HTTP 호출
+
+# 7단계에서 새로 추가. 버전은 이 장 작성 시점(2026-09-09) 실측 기준선이다 —
+# 설치해서 `pip list`로 직접 확인했다(장 하단 "참고 문서"). langgraph 1.x는
+# StateGraph/START/END, add_conditional_edges, RetryPolicy, error_handler,
+# NodeError, Command를 이 장의 코드가 쓰는 형태로 제공한다.
+langgraph>=1.2,<2                  # State/Node/Edge 그래프, 조건 분기, 재시도 정책
+langgraph-checkpoint-sqlite>=3.1,<4  # SqliteSaver/AsyncSqliteSaver 체크포인터
+
+# 단위 테스트 실행용.
+pytest>=8.0,<9

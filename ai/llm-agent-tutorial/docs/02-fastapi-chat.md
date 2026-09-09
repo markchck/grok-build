@@ -163,16 +163,20 @@ Starlette/uvicorn이 ASGI "http.disconnect" 메시지를 받는다   ← 프레�
                  (반복문 안에서 다음 조각을 만들기 전에 먼저 검사)
         │
         ▼
-docagent.llm.stream_chat_completion의 async for가 CancelledError를 받는다
+app._stream_chat_completion_async()의 await loop.run_in_executor(...)가
+CancelledError를 받는다 (코루틴은 여기서 즉시 멈춘다)
         │
         ▼
-finally: await stream.close()  → 모델 서버로 가는 HTTP 연결이 실제로 끊긴다   ← 애플리케이션
+백그라운드 스레드(docagent.llm.chat_stream을 동기로 소비하는 쪽)는 이 취소를
+직접 받지 못한다 → 모델 서버 응답을 끝까지 받고서야 자연히 끝난다
 ```
 
 (A)와 (B)는 같은 목적(빠른 취소)을 서로 다른 방식으로 달성한다. (A)는 프레임워크가
 "알아서" 해 주지만 다음 `await` 지점에서만 작동하므로 반응이 한 박자 늦을 수 있다.
 (B)는 우리가 반복문 안에서 명시적으로 확인해 더 빨리 멈출 수 있지만 코드를 직접
-써야 한다. 이 장은 두 가지를 모두 쓴다.
+써야 한다. 이 장은 두 가지를 모두 쓴다 — 다만 (A)·(B) 모두 **코루틴 쪽**을 빨리
+멈출 뿐, 모델 서버로 가는 실제 HTTP 연결은 4.4절에서 설명하듯 별도 스레드 안에
+있어 즉시 끊기지 않는다는 한계가 있다.
 
 ## 3. 실습 준비
 
@@ -289,8 +293,7 @@ class Settings:
     request_timeout_seconds: float
 
 
-@lru_cache(maxsize=1)
-def get_settings() -> Settings:
+def load_settings() -> Settings:
     return Settings(
         openai_base_url=os.environ.get("OPENAI_BASE_URL", "http://localhost:8000/v1"),
         openai_api_key=os.environ.get("OPENAI_API_KEY", "sk-local-example-key"),
@@ -298,9 +301,16 @@ def get_settings() -> Settings:
         app_base_url=os.environ.get("APP_BASE_URL", "http://localhost:8080"),
         request_timeout_seconds=float(os.environ.get("REQUEST_TIMEOUT_SECONDS", "60")),
     )
+
+
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    return load_settings()
 ```
 
-1단계와 같은 패턴이다. `lru_cache`로 프로세스 안에서 한 번만 환경 변수를 읽는다.
+1단계와 같은 패턴이다. `load_settings()`/`get_settings()` 두 이름은 `PROJECT-SPEC.md` 9절이
+모든 단계에 고정한 것이다. `load_settings()`는 호출할 때마다 환경 변수를 새로 읽고(테스트용),
+`get_settings()`는 `lru_cache`로 프로세스 안에서 한 번만 읽는다(애플리케이션 코드용).
 
 ### 4.3 SSE 이벤트 포맷을 한곳에 모으기
 
@@ -342,73 +352,122 @@ def done_event(finish_reason: str) -> str:
 
 ### 4.4 모델 서버 스트리밍 호출과 취소 대응
 
-`code/step02_fastapi_chat/docagent/llm.py`
+`docagent/llm.py`는 `PROJECT-SPEC.md` 9절이 모든 단계에 고정한 공통 인터페이스
+(`chat` / `chat_stream` / `chat_json` / `ChatResult` / `LLMError`)를 쓴다. `chat_stream`은
+동기(sync) `Iterator[str]`로 고정돼 있으므로, 이 함수 자체는 HTTP도 세션도 SSE도 모른다 —
+"메시지 목록을 넣으면 텍스트 조각을 순서대로 만든다"만 안다.
+
+`code/step02_fastapi_chat/docagent/llm.py` (일부)
 ```python
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import Iterator
+from typing import Any
 
-from openai import APIConnectionError, APIError, APIStatusError, APITimeoutError, AsyncOpenAI
+from openai import APIConnectionError, APIError, APIStatusError, APITimeoutError, OpenAI
 
-from .config import get_settings
-
-
-class LLMError(Exception):
-    def __init__(self, code: str, message: str) -> None:
-        self.code = code
-        super().__init__(message)
+from .config import Settings, get_settings
 
 
-def _build_client() -> AsyncOpenAI:
-    settings = get_settings()
-    return AsyncOpenAI(
+class LLMError(RuntimeError):
+    """모델 서버 호출 실패를 감싸는 공통 예외(PROJECT-SPEC.md 9절)."""
+
+
+def _client(settings: Settings) -> OpenAI:
+    return OpenAI(
         base_url=settings.openai_base_url,
         api_key=settings.openai_api_key,
         timeout=settings.request_timeout_seconds,
     )
 
 
-_client = _build_client()
-
-
-async def stream_chat_completion(messages: list[dict[str, str]]) -> AsyncIterator[str]:
+def chat_stream(
+    messages: list[dict[str, Any]],
+    *,
+    settings: Settings | None = None,
+    temperature: float = 0.2,
+    max_tokens: int = 1024,
+) -> Iterator[str]:
+    settings = settings or get_settings()
+    client = _client(settings)
     try:
-        stream = await _client.chat.completions.create(
-            model=get_settings().chat_model,
-            messages=messages,
-            stream=True,
+        stream = client.chat.completions.create(
+            model=settings.chat_model, messages=messages,
+            temperature=temperature, max_tokens=max_tokens, stream=True,
         )
     except APIConnectionError as exc:
-        raise LLMError("connection_error", f"모델 서버에 연결할 수 없다: {exc}") from exc
+        raise LLMError(f"모델 서버에 연결할 수 없다: {exc}") from exc
     except APITimeoutError as exc:
-        raise LLMError("timeout", f"모델 서버 응답이 시간 안에 오지 않았다: {exc}") from exc
+        raise LLMError(f"모델 서버 응답이 시간 안에 오지 않았다: {exc}") from exc
     except APIStatusError as exc:
         raise LLMError(
-            "api_status_error",
-            f"모델 서버가 오류 상태를 반환했다 (status={exc.status_code}): {exc.message}",
+            f"모델 서버가 오류 상태를 반환했다 (status={exc.status_code}): {exc.message}"
         ) from exc
     except APIError as exc:
-        raise LLMError("api_error", f"모델 서버 호출 중 오류가 발생했다: {exc}") from exc
+        raise LLMError(f"모델 서버 호출 중 오류가 발생했다: {exc}") from exc
 
     try:
-        async for chunk in stream:
+        for chunk in stream:
             if not chunk.choices:
                 continue
             delta = chunk.choices[0].delta
             if delta is not None and delta.content:
                 yield delta.content
     finally:
-        await stream.close()
+        stream.close()
 ```
 
-이 함수는 HTTP도, 세션도, SSE도 모른다. 오직 "메시지 목록을 넣으면 텍스트 조각을
-만든다"만 안다. 취소 처리의 핵심은 `finally: await stream.close()`다. openai 파이썬
-SDK의 `AsyncStream`은 `close()`가 "응답을 닫고 연결을 반환한다. 응답 바디를 끝까지
-읽으면 자동으로 호출된다"고 문서화돼 있다 — 정상 종료라면 안 불러도 되지만, 이
-함수를 감싼 태스크가 중간에 취소되면(연결이 끊긴 클라이언트를 위해 계속 모델을
-호출할 이유가 없으므로) `async for` 지점에서 `asyncio.CancelledError`가 올라오고,
-`finally`가 실행돼 모델 서버로 가는 연결을 실제로 끊는다. 이 `finally`가 없으면
-클라이언트는 이미 떠났는데 모델 서버와의 연결과 과금은 끝까지 이어질 수 있다.
+`chat_stream`은 동기 함수이지만, 이 장의 `/api/chat`은 FastAPI 비동기 엔드포인트이고
+클라이언트 연결 종료를 감지해야 한다. 그래서 `app.py`는 이 동기 제너레이터를 별도
+스레드에서 돌리고, 그 결과를 큐(`queue.Queue`)로 코루틴에 전달하는 작은 다리
+(`_stream_chat_completion_async`)를 둔다.
+
+`code/step02_fastapi_chat/docagent/app.py` (일부)
+```python
+_STREAM_DONE = object()
+
+
+async def _stream_chat_completion_async(messages: list[dict[str, str]]) -> AsyncIterator[str]:
+    settings = get_settings()
+    q: "queue.Queue[object]" = queue.Queue()
+
+    def worker() -> None:
+        try:
+            for piece in chat_stream(messages, settings=settings):
+                q.put(piece)
+        except LLMError as exc:
+            q.put(exc)
+        finally:
+            q.put(_STREAM_DONE)
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+
+    loop = asyncio.get_running_loop()
+    while True:
+        item = await loop.run_in_executor(None, q.get)
+        if item is _STREAM_DONE:
+            return
+        if isinstance(item, LLMError):
+            raise item
+        yield item
+```
+
+이 함수가 취소 처리의 핵심이다. `openai` SDK의 동기 스트림은 `finally: stream.close()`로
+정리되지만, 그 정리는 **백그라운드 스레드 안에서** 일어난다 — 이 스레드는 다른 스레드에서
+강제로 끊을 수 없으므로, `/api/chat`을 호출한 클라이언트가 연결을 끊어도(아래
+`_chat_event_stream`의 `is_disconnected()` 검사가 먼저 멈추더라도) 이 백그라운드 스레드는
+모델 서버 응답을 끝까지 읽고서야 종료된다. 스레드는 데몬(daemon)이므로 그 자체가 프로세스
+종료를 막지는 않지만, 2단계에서 다룬 "연결이 끊기면 모델 호출도 즉시 멈춘다"는 성질이
+1단계·이 절 도입부의 순수 비동기 스트림보다 약해진 것이다 — 공통 인터페이스(동기
+`chat_stream`)와 FastAPI의 비동기 취소를 양쪽 다 지키려는 절충이다.
+
+`_stream_chat_completion_async`를 소비하는 `_chat_event_stream`이 취소되면(클라이언트가
+연결을 끊어 `StreamingResponse`가 이 태스크를 취소하면) `await loop.run_in_executor(...)`
+지점에서 `asyncio.CancelledError`가 올라온다. 이 코루틴 자체는 즉시 멈추지만, 그 시점에
+백그라운드 스레드가 이미 `q.put(piece)`를 부르는 중이었다면 그 스레드는 (더 이상 아무도
+읽지 않는) 큐에 계속 쓰다가 모델 서버 응답을 끝까지 받은 뒤에야 자연히 끝난다 — 위에서
+설명한 절충이다.
 
 ### 4.5 요청 ID·처리 시간 미들웨어 — 순수 ASGI 미들웨어로 만드는 이유
 
@@ -485,7 +544,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import queue
+import threading
 import uuid
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Literal
 
@@ -494,8 +556,9 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from .config import get_settings
 from .events import done_event, error_event, status_event, token_event
-from .llm import LLMError, stream_chat_completion
+from .llm import LLMError, chat_stream
 from .middleware import RequestContextMiddleware
 
 logger = logging.getLogger("docagent.app")
@@ -542,7 +605,7 @@ async def _chat_event_stream(request: Request, session_id: str, history: list[di
 
     try:
         yield status_event("writing", "모델 서버에 답변을 요청하는 중")
-        async for piece in stream_chat_completion(history):
+        async for piece in _stream_chat_completion_async(history):
             if await request.is_disconnected():
                 logger.info("request_id=%s client disconnected mid-stream", request_id)
                 finish_reason = "cancelled"
@@ -553,8 +616,11 @@ async def _chat_event_stream(request: Request, session_id: str, history: list[di
         logger.info("request_id=%s stream task cancelled", request_id)
         raise
     except LLMError as exc:
-        logger.warning("request_id=%s llm_error code=%s message=%s", request_id, exc.code, exc)
-        yield error_event(exc.code, str(exc))
+        # LLMError는 PROJECT-SPEC.md 9절 공통 인터페이스라 code 속성을 갖지 않는다
+        # (1~5단계 모든 llm.py가 같은 예외 타입을 쓴다). error 이벤트의 code에는
+        # 고정 문자열 "llm_error"를 넣고, 원인은 message에 그대로 담는다.
+        logger.warning("request_id=%s llm_error message=%s", request_id, exc)
+        yield error_event("llm_error", str(exc))
         yield done_event("stop")
         return
 
@@ -681,6 +747,14 @@ uvicorn docagent.app:app --reload --port 8080
 
 모델이 실제로 만드는 문장은 서버와 프롬프트에 따라 달라지므로, 위 확인은 "이 구조와
 순서로 동작하는지"를 보는 것이지 특정 문구가 나오는지를 보는 것이 아니다.
+
+**모델 서버 없이 확인하기**: 실제 모델 서버 대신 `code/_tools/fake_openai_server.py`
+(학습용 OpenAI 호환 스텁 서버)를 띄우고 `.env`의 `OPENAI_BASE_URL`을 그 주소로 바꾸면
+위 1~4번(정상 스트리밍, 세션 헤더, 요청 로그)까지는 그대로 확인할 수 있다. 다만 스텁
+서버는 고정 문자열을 몇 조각으로 잘라 보내는 것뿐이라 5번(취소 시 `elapsed_ms`가
+줄어드는지)은 응답이 워낙 빨리 끝나 체감하기 어렵다 — 그 항목은 실제 모델 서버로
+확인한다. 이 서버가 확인해 주는 것과 못 해주는 것은 `code/_tools/README.md`에 정리돼
+있다.
 
 ## 6. 실패 상황 실습
 

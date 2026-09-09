@@ -1,0 +1,29 @@
+# 이 단계에서 실제로 쓰는 패키지만 나열한다. 범위로 고정한다(PROJECT-SPEC.md 10절).
+# 버전은 2026-09-09 시점 실제 설치로 확인했다(docs/06-langchain.md 참고 문서).
+
+# LangChain 핵심: 메시지·프롬프트·Runnable(LCEL)·Tool·create_agent·미들웨어.
+# 1.x부터 create_agent가 표준 진입점이고, 내부적으로 langgraph에 의존한다
+# (설치하면 langgraph가 함께 들어온다 — 7단계에서 배우는 것과는 다른 용도로 쓰인다).
+langchain>=1.4,<2.0
+
+# ChatOpenAI/OpenAIEmbeddings — OpenAI 호환 서버(base_url 지정)에 붙는 모델 인터페이스.
+langchain-openai>=1.6,<2.0
+
+# langchain_milvus.Milvus, BM25BuiltInFunction — Milvus 벡터 저장소 + 하이브리드 검색 통합.
+langchain-milvus>=0.4,<0.5
+
+# langchain이 내부적으로 의존하지만, docagent.llm(직접 구현 경로)이 openai SDK를
+# 그대로 쓰므로 명시적으로도 남겨 둔다.
+openai>=3.10,<4.0
+
+# Milvus 서버/	Milvus Lite 클라이언트. langchain-milvus가 이 위에서 동작한다.
+pymilvus>=2.5,<4.0
+
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.30,<1.0
+python-dotenv>=1.0,<2.0
+pydantic>=2.7,<3.0
+httpx>=0.27,<1.0
+
+# 단위 테스트 실행용.
+pytest>=8.0,<9.0
