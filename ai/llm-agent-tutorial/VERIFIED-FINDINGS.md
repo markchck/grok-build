@@ -118,3 +118,36 @@ Lite에서만 확인했고 standalone에서는 확인하지 않았다.
 
 스텁 서버는 `code/_tools/fake_openai_server.py`다. 모델이 아니므로 **답변 품질과
 실제 모델 서버의 기능 지원 범위는 검증하지 않는다.**
+
+## 9. Milvus Lite의 sparse(BM25) 컬렉션 취약성 — 부분적으로만 규명함
+
+`milvus-lite` 3.2.1에서 sparse(BM25 Function) 컬렉션을 만들고 **다른 프로세스에서 읽으면**
+다음으로 실패하는 경우가 있다.
+
+```
+MilvusException: (code=1, message=vector column must be FixedSizeList, got binary)
+```
+
+직접 실험한 결과는 다음과 같다.
+
+| 구성 | 새 프로세스에서 sparse/hybrid 검색 |
+| --- | --- |
+| 5단계 코드의 스키마(pymilvus 2.6.17로 직접 선언) | **동작한다** (여러 번 재확인) |
+| 최소 재현 스키마(pk/dense/text/sparse만, pymilvus 2.6.17) | 실패 |
+| 같은 최소 재현 스키마, pymilvus 3.0.1 | 실패 |
+| `flush()` 호출을 뺀 경우 | 여전히 실패 |
+| 필드 선언 순서를 5단계와 같게 바꾼 경우 | 여전히 실패 |
+| langchain-milvus 0.4.0이 만든 컬렉션(6단계) | 실패 |
+
+**즉 이 오류는 langchain-milvus 고유의 문제가 아니다.** 순수 pymilvus로 만든 컬렉션에서도
+재현된다. 반대로 5단계 구성은 같은 조건에서 안정적으로 동작한다. 두 구성의 어떤 차이가
+경계를 가르는지는 **특정하지 못했다**. pymilvus 버전, flush 여부, 필드 선언 순서는
+모두 원인이 아님을 실험으로 배제했다.
+
+`[확인 필요: 이 오류를 유발하는 정확한 조건, 그리고 Milvus standalone(Docker)에서도 같은
+문제가 있는지]` — Lite에서만 확인했다.
+
+**튜토리얼에서의 대응**: 하이브리드 검색을 실제로 쓰려면 Milvus standalone을 권한다.
+Milvus Lite는 5단계 구성에 한해 학습용으로 쓸 수 있다. 6장은 이 제약 때문에
+적재와 서비스를 같은 프로세스에 두는 우회책을 쓰며, 그것이 우회책이라는 사실과
+원인이 규명되지 않았다는 사실을 본문에 밝힌다. **원인을 아는 것처럼 쓰지 않는다.**
