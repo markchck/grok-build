@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<title>docagent - 문서 분석 에이전트</title>
+<style>
+  :root { color-scheme: light; }
+  body { font-family: system-ui, sans-serif; max-width: 920px; margin: 32px auto; padding: 0 16px; color: #1b1b1b; }
+  h1 { font-size: 20px; }
+  .hint { color: #666; font-size: 13px; margin-bottom: 16px; }
+  form { display: flex; gap: 8px; margin-bottom: 16px; }
+  input[type=text] { flex: 1; padding: 8px; font-size: 14px; }
+  button { padding: 8px 12px; cursor: pointer; }
+  .grid { display: grid; grid-template-columns: 260px 1fr; gap: 16px; align-items: start; }
+  .panel { border: 1px solid #ddd; border-radius: 8px; padding: 12px; }
+  #status { color: #444; font-size: 13px; min-height: 18px; margin-bottom: 8px; }
+  #status.disclaimer::before { content: "실행 관측: "; color: #999; }
+
+  #todo-list { list-style: none; margin: 0; padding: 0; font-size: 14px; }
+  #todo-list li { padding: 4px 2px; display: flex; gap: 6px; align-items: baseline; }
+  .state-pending { color: #888; }
+  .state-running { color: #0a58ca; font-weight: 600; }
+  .state-done { color: #157347; }
+  .state-failed { color: #b02a37; font-weight: 600; }
+
+  #log { white-space: pre-wrap; border: 1px solid #eee; border-radius: 6px; padding: 10px; font-size: 13px; min-height: 80px; background: #fafafa; margin-bottom: 12px; }
+  .entry-tool { color: #6a3fbf; }
+  .entry-result-ok { color: #157347; }
+  .entry-result-bad { color: #b02a37; }
+
+  #answer { border: 1px solid #ddd; border-radius: 8px; padding: 12px; min-height: 60px; margin-bottom: 12px; line-height: 1.6; }
+  #answer .citation { color: #0a58ca; text-decoration: underline; cursor: pointer; }
+
+  #sources-list { list-style: none; margin: 0; padding: 0; font-size: 13px; }
+  #sources-list li { border-top: 1px solid #eee; padding: 8px 0; }
+  #sources-list a { font-weight: 600; }
+  .snippet { color: #555; margin-top: 4px; }
+
+  #approval-box { display: none; margin-bottom: 16px; border: 2px solid #e08; border-radius: 8px; padding: 16px; }
+  #approval-box textarea { width: 100%; box-sizing: border-box; height: 60px; font-family: monospace; }
+  #approval-box .row { display: flex; gap: 8px; margin-top: 8px; }
+  #approval-box button { flex: 1; }
+  #approval-box button:disabled { opacity: .5; cursor: not-allowed; }
+
+  #finish-banner { display: none; border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; font-size: 14px; }
+  #finish-banner.ok { background: #eaf6ec; border: 1px solid #157347; }
+  #finish-banner.warn { background: #fff6e5; border: 1px solid #b06d00; }
+  #finish-banner.bad { background: #fdecea; border: 1px solid #b02a37; }
+
+  #export-btn { display: none; }
+  table.csv-preview { border-collapse: collapse; font-size: 12px; margin-top: 8px; }
+  table.csv-preview th, table.csv-preview td { border: 1px solid #ddd; padding: 4px 8px; text-align: right; }
+  table.csv-preview th:first-child, table.csv-preview td:first-child,
+  table.csv-preview th:nth-child(2), table.csv-preview td:nth-child(2),
+  table.csv-preview th:nth-child(3), table.csv-preview td:nth-child(3) { text-align: left; }
+</style>
+</head>
+<body>
+  <h1>docagent — 문서·CSV 분석 에이전트</h1>
+  <p class="hint">
+    아래 목록·상태·요약은 모델의 내부 사고를 그대로 보여주는 것이 아니다.
+    애플리케이션이 실제로 관측한 실행 이벤트(계획, 도구 호출, 검색·검증 단계,
+    승인 요청)만 표시한다.
+  </p>
+
+  <form id="chat-form">
+    <input type="text" id="message" placeholder="예: 노트북 Q1 매출 행을 보여주고 관련 문서를 검색해줘" required />
+    <button type="submit">보내기</button>
+  </form>
+
+  <div id="finish-banner"></div>
+
+  <div id="approval-box">
+    <div><strong>승인 요청</strong></div>
+    <div id="approval-reason" style="margin: 6px 0;"></div>
+    <div>인자(수정하려면 이 텍스트를 고친 뒤 "수정 후 실행"을 누른다):</div>
+    <textarea id="approval-args"></textarea>
+    <div class="row">
+      <button id="btn-approve">승인(그대로 실행)</button>
+      <button id="btn-edit">수정 후 실행</button>
+      <button id="btn-reject-alt">거절(대안 진행)</button>
+      <button id="btn-reject-abort">거절(중단)</button>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="panel">
+      <strong>작업 계획</strong>
+      <ul id="todo-list"><li class="state-pending">(계획 없음)</li></ul>
+    </div>
+    <div>
+      <div id="status" class="disclaimer"></div>
+      <div id="log"></div>
+      <div id="answer">(답변이 여기 표시된다)</div>
+
+      <div class="panel">
+        <strong>근거</strong>
+        <ul id="sources-list"></ul>
+      </div>
+
+      <p>
+        <button id="export-btn">CSV로 다운로드</button>
+        <span id="export-hint" class="hint"></span>
+      </p>
+      <div id="table-preview"></div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -503,16 +503,21 @@ while True:
 
 ### 4.8 최종 답변까지: SSE로 내보내기
 
-`app.py`는 `run_agent()`가 만드는 이벤트를 그대로 SSE로 흘려보낸다. 2단계의 `/chat`
+`app.py`는 `arun_agent()`가 만드는 이벤트를 그대로 SSE로 흘려보낸다. 2단계의 `/chat`
 엔드포인트와 라우팅 모양은 같고, 내부 구현만 에이전트 루프로 바뀌었다.
 
 `code/step03_tool_calling/docagent/app.py`
 ```python
 @app.post("/chat")
-def chat(req: ChatRequest) -> StreamingResponse:
-    def event_stream():
-        for agent_event in run_agent(req.message):
-            yield _render_event(agent_event.kind, agent_event.data)
+async def chat(req: ChatRequest, request: Request) -> StreamingResponse:
+    async def event_stream():
+        try:
+            async for agent_event in arun_agent(req.message):
+                if await request.is_disconnected():
+                    return
+                yield _render_event(agent_event.kind, agent_event.data)
+        except asyncio.CancelledError:
+            raise
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 ```
@@ -520,6 +525,13 @@ def chat(req: ChatRequest) -> StreamingResponse:
 `_render_event()`는 `docagent.events`의 함수만 써서 `event:`/`data:` 문자열을
 만든다 — 이벤트 이름과 JSON 키가 `PROJECT-SPEC.md` 4장과 어긋나지 않게 한 군데서만
 관리하기 위해서다.
+
+**동기 `run_agent()`가 아니라 비동기 `arun_agent()`를 쓰는 이유**: `PROJECT-SPEC.md`
+9절이 "2단계 이후 서버 코드는 `achat`/`achat_stream`을 쓴다"고 정한 이유(클라이언트가
+연결을 끊었을 때 모델 서버로 나가는 HTTP 호출까지 실제로 취소하기 위해서)가 이
+에이전트 루프에도 그대로 적용된다. `run_agent()`는 `docagent.llm.chat()`(동기)을
+쓰고, 테스트와 CLI가 계속 이 함수를 쓴다 — `arun_agent()`는 `docagent.llm.achat()`을
+쓰는 별도의 비동기 버전이다. 둘의 로직은 완전히 같고 모델 호출 지점만 다르다.
 
 ## 5. 실행과 결과 확인
 

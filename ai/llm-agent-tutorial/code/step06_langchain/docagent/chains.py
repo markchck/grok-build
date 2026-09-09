@@ -65,6 +65,44 @@ def _build_context_block(sources: list[citations.RetrievedSource]) -> str:
     return "\n\n".join(lines)
 
 
+async def aanswer_with_citations(
+    question: str,
+    *,
+    settings: Settings | None = None,
+    model=None,
+    top_k: int = 5,
+    ranker: RankerName = "rrf",
+) -> tuple[citations.CitationResult, list[citations.RetrievedSource]]:
+    """``answer_with_citations()``의 비동기 버전(PROJECT-SPEC.md 9절). app.py가 쓴다.
+
+    LCEL의 ``Runnable``은 ``invoke()``와 나란히 ``ainvoke()``를 제공한다 —
+    ``langchain_openai.ChatOpenAI``는 내부적으로 ``openai.AsyncOpenAI``를 써서
+    ``ainvoke()``를 처리하므로, 클라이언트가 연결을 끊었을 때(이 코루틴을
+    기다리는 태스크가 취소될 때) 모델 서버로 나가는 HTTP 호출까지 실제로
+    취소된다 — 2단계 llm.py의 ``achat_stream``과 같은 이유다. ``hybrid_search``
+    (Milvus 호출)는 이 장에서 비동기 경로가 없으므로 동기 그대로 쓴다 —
+    PROJECT-SPEC.md 9절의 취소 요구사항은 "모델 서버로 나가는 HTTP 호출"에
+    관한 것이지 검색 백엔드에 관한 것이 아니다.
+    """
+    s = settings or get_settings()
+    hits = hybrid_search(question, limit=top_k, ranker=ranker, settings=s)
+    if not hits:
+        empty = citations.CitationResult(
+            text="등록된 문서에서 관련 내용을 찾지 못했다. 다른 질문으로 다시 시도한다.",
+            sources=[],
+            used_labels=[],
+            dropped_labels=[],
+        )
+        return empty, []
+
+    retrieved = citations.build_retrieved_sources(hits, app_base_url=s.app_base_url)
+    chain = build_answer_chain(model=model)
+    raw_answer = await chain.ainvoke({"context": _build_context_block(retrieved), "question": question})
+
+    result = citations.validate_and_link_citations(raw_answer, retrieved, app_base_url=s.app_base_url)
+    return result, retrieved
+
+
 def answer_with_citations(
     question: str,
     *,

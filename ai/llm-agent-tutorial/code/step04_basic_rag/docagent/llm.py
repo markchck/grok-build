@@ -13,7 +13,7 @@ PROJECT-SPEC.md 9절이 고정한 공통 인터페이스(``chat`` / ``chat_strea
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -22,6 +22,7 @@ from openai import (
     APIError,
     APIStatusError,
     APITimeoutError,
+    AsyncOpenAI,
     OpenAI,
 )
 
@@ -130,6 +131,63 @@ def chat_stream(
         raise LLMError(f"모델 서버 오류 응답: {exc.status_code} {exc.message}") from exc
     except APIError as exc:
         raise LLMError(f"모델 서버 호출 실패: {exc}") from exc
+
+
+def _async_client(settings: Settings) -> AsyncOpenAI:
+    return AsyncOpenAI(
+        base_url=settings.openai_base_url,
+        api_key=settings.openai_api_key,
+        timeout=settings.request_timeout_seconds,
+    )
+
+
+async def achat_stream(
+    messages: list[dict[str, Any]],
+    *,
+    settings: Settings | None = None,
+    temperature: float = 0.2,
+    max_tokens: int = 1024,
+) -> AsyncIterator[str]:
+    """``chat_stream()``의 비동기 버전(PROJECT-SPEC.md 9절). app.py가 쓴다.
+
+    이 코루틴을 소비하는 태스크가 취소되면(클라이언트가 연결을 끊어
+    ``asyncio.CancelledError``가 올라오면) ``finally``에서 스트림과 클라이언트를
+    닫아 모델 서버로 나가는 HTTP 연결까지 함께 끊는다. 동기 ``chat_stream()``을
+    스레드에서 돌리는 방식으로는 그 스레드를 밖에서 끊을 수 없어 취소가 반쪽이
+    된다(2단계 llm.py의 같은 설명 참고).
+    """
+    settings = settings or get_settings()
+    client = _async_client(settings)
+    try:
+        stream = await client.chat.completions.create(
+            model=settings.chat_model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stream=True,
+        )
+    except APITimeoutError as exc:
+        raise LLMError(f"모델 서버 응답 시간 초과({settings.request_timeout_seconds}초)") from exc
+    except APIConnectionError as exc:
+        raise LLMError(f"모델 서버에 연결할 수 없다: {exc}") from exc
+    except APIStatusError as exc:
+        raise LLMError(f"모델 서버 오류 응답: {exc.status_code} {exc.message}") from exc
+    except APIError as exc:
+        raise LLMError(f"모델 서버 호출 실패: {exc}") from exc
+
+    try:
+        async for chunk in stream:
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            if delta is not None and delta.content:
+                yield delta.content
+    except APIError as exc:
+        raise LLMError(f"스트리밍 중 오류가 발생했다: {exc}") from exc
+    finally:
+        # 정상 종료·오류·취소 어느 경우에도 스트림과 연결을 닫는다.
+        await stream.close()
+        await client.close()
 
 
 def chat_json(

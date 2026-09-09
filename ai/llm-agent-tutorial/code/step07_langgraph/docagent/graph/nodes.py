@@ -26,14 +26,18 @@ from __future__ import annotations
 import re
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Protocol
+from typing import Any, Awaitable, Callable, Protocol
 
 from docagent.llm import ChatResult
 from docagent.rag import citations
 
 
 class ChatFn(Protocol):
-    def __call__(self, messages: list[dict[str, Any]], *, temperature: float = 0.2) -> ChatResult: ...
+    """PROJECT-SPEC.md 9절: 서버 코드(이 그래프)는 비동기 쪽(``achat``)을 쓴다 —
+    클라이언트가 연결을 끊었을 때 모델 서버로 나가는 HTTP 호출까지 실제로
+    취소하려면 이 호출이 ``await``할 수 있는 코루틴이어야 하기 때문이다."""
+
+    def __call__(self, messages: list[dict[str, Any]], *, temperature: float = 0.2) -> Awaitable[ChatResult]: ...
 
 
 class JsonChatFn(Protocol):
@@ -44,7 +48,7 @@ class JsonChatFn(Protocol):
         schema_name: str,
         json_schema: dict[str, Any],
         temperature: float = 0.0,
-    ) -> dict[str, Any]: ...
+    ) -> Awaitable[dict[str, Any]]: ...
 
 
 class SearchFn(Protocol):
@@ -83,7 +87,7 @@ def _trace(stage: str, message: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def make_classify_node(deps: NodeDeps) -> Callable[[dict], dict]:
+def make_classify_node(deps: NodeDeps) -> Callable[[dict], Awaitable[dict]]:
     schema = {
         "type": "object",
         "properties": {
@@ -93,13 +97,13 @@ def make_classify_node(deps: NodeDeps) -> Callable[[dict], dict]:
         "required": ["category"],
     }
 
-    def classify(state: dict) -> dict:
+    async def classify(state: dict) -> dict:
         question = state["question"]
 
         category: str | None = None
         source = "heuristic"
         try:
-            result = deps.json_chat(
+            result = await deps.json_chat(
                 [
                     {
                         "role": "system",
@@ -233,7 +237,7 @@ def make_retrieve_sparse_node(deps: NodeDeps) -> Callable[[dict], dict]:
 # ---------------------------------------------------------------------------
 
 
-def make_verify_node(deps: NodeDeps) -> Callable[[dict], dict]:
+def make_verify_node(deps: NodeDeps) -> Callable[[dict], Awaitable[dict]]:
     schema = {
         "type": "object",
         "properties": {
@@ -243,7 +247,7 @@ def make_verify_node(deps: NodeDeps) -> Callable[[dict], dict]:
         "required": ["sufficient", "reason"],
     }
 
-    def verify(state: dict) -> dict:
+    async def verify(state: dict) -> dict:
         retrieved = state.get("retrieved", [])
         source = "heuristic"
         sufficient: bool | None = None
@@ -251,7 +255,7 @@ def make_verify_node(deps: NodeDeps) -> Callable[[dict], dict]:
 
         try:
             context = "\n".join(f"- {h['text'][:200]}" for h in retrieved[: deps.top_k])
-            result = deps.json_chat(
+            result = await deps.json_chat(
                 [
                     {
                         "role": "system",
@@ -359,8 +363,8 @@ _SYSTEM_PROMPT = (
 )
 
 
-def make_answer_node(deps: NodeDeps) -> Callable[[dict], dict]:
-    def answer(state: dict) -> dict:
+def make_answer_node(deps: NodeDeps) -> Callable[[dict], Awaitable[dict]]:
+    async def answer(state: dict) -> dict:
         retrieved = state.get("retrieved", [])[: deps.top_k]
         sources = citations.build_retrieved_sources(retrieved, app_base_url=deps.app_base_url)
 
@@ -384,7 +388,7 @@ def make_answer_node(deps: NodeDeps) -> Callable[[dict], dict]:
                 "content": f"[컨텍스트]\n{context_block}\n\n[질문]\n{state['question']}",
             },
         ]
-        result_chat = deps.chat(messages, temperature=0.2)
+        result_chat = await deps.chat(messages, temperature=0.2)
         raw_answer = result_chat.text or ""
 
         result = citations.validate_and_link_citations(raw_answer, sources, app_base_url=deps.app_base_url)
@@ -405,8 +409,8 @@ def make_answer_node(deps: NodeDeps) -> Callable[[dict], dict]:
     return answer
 
 
-def make_chitchat_answer_node(deps: NodeDeps) -> Callable[[dict], dict]:
-    def chitchat_answer(state: dict) -> dict:
+def make_chitchat_answer_node(deps: NodeDeps) -> Callable[[dict], Awaitable[dict]]:
+    async def chitchat_answer(state: dict) -> dict:
         messages = [
             {
                 "role": "system",
@@ -414,7 +418,7 @@ def make_chitchat_answer_node(deps: NodeDeps) -> Callable[[dict], dict]:
             },
             {"role": "user", "content": state["question"]},
         ]
-        result_chat = deps.chat(messages, temperature=0.4)
+        result_chat = await deps.chat(messages, temperature=0.4)
         text = result_chat.text or ""
         return {
             "answer_text": text,

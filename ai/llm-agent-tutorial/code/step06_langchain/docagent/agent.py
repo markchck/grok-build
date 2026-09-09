@@ -34,7 +34,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, Iterator
+from typing import Any, AsyncIterator, Iterator
 
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
@@ -107,6 +107,21 @@ class RepeatToolCallGuardMiddleware(AgentMiddleware):
             )
         return handler(request)
 
+    async def awrap_tool_call(self, request: ToolCallRequest, handler):
+        """``wrap_tool_call``의 비동기 버전. ``arun_agent()``가 ``agent.astream()``을
+        쓰므로(PROJECT-SPEC.md 9절) 이 훅이 없으면 ``NotImplementedError``가 난다 —
+        ``AgentMiddleware``는 동기/비동기 훅을 따로 요구한다. 로직은 동기판과 같다."""
+        name = request.tool_call.get("name", "")
+        args = request.tool_call.get("args", {}) or {}
+        key = (name, _normalize_args(args))
+        self.call_counts[key] = self.call_counts.get(key, 0) + 1
+
+        if self.call_counts[key] > self.limit:
+            raise RepeatedToolCallError(
+                f"도구 '{name}'을(를) 같은 인자({args})로 {self.limit}회 넘게 호출했다."
+            )
+        return await handler(request)
+
 
 def _handle_tool_execution_error(exc: Exception, request: ToolCallRequest) -> str | None:
     """``ToolErrorMiddleware(on_error=...)``에 넘기는 콜백.
@@ -162,11 +177,40 @@ class CallLoggingMiddleware(AgentMiddleware):
         logger.info("model_call elapsed_ms=%.1f messages=%d", elapsed_ms, len(request.messages))
         return response
 
+    async def awrap_model_call(self, request: ModelRequest, handler):
+        """``wrap_model_call``의 비동기 버전. ``arun_agent()``가 ``agent.astream()``을
+        쓰므로(PROJECT-SPEC.md 9절) 필요하다 — 없으면 ``NotImplementedError``가 난다.
+        로직은 동기판과 같고, 모델 호출을 ``await handler(request)``로 기다리는
+        것만 다르다(이 ``await`` 지점이 있어야 클라이언트가 연결을 끊었을 때
+        취소가 실제 모델 호출까지 전달된다)."""
+        start = time.monotonic()
+        response = await handler(request)
+        elapsed_ms = (time.monotonic() - start) * 1000
+        self.logs.append(CallLog("model", request.model.__class__.__name__, elapsed_ms, True))
+        logger.info("model_call elapsed_ms=%.1f messages=%d", elapsed_ms, len(request.messages))
+        return response
+
     def wrap_tool_call(self, request: ToolCallRequest, handler):
         start = time.monotonic()
         name = request.tool_call.get("name", "")
         try:
             response = handler(request)
+        except Exception:
+            elapsed_ms = (time.monotonic() - start) * 1000
+            self.logs.append(CallLog("tool", name, elapsed_ms, False))
+            logger.info("tool_call name=%s elapsed_ms=%.1f ok=False", name, elapsed_ms)
+            raise
+        elapsed_ms = (time.monotonic() - start) * 1000
+        self.logs.append(CallLog("tool", name, elapsed_ms, True))
+        logger.info("tool_call name=%s elapsed_ms=%.1f ok=True", name, elapsed_ms)
+        return response
+
+    async def awrap_tool_call(self, request: ToolCallRequest, handler):
+        """``wrap_tool_call``의 비동기 버전(이유는 ``awrap_model_call`` 참고)."""
+        start = time.monotonic()
+        name = request.tool_call.get("name", "")
+        try:
+            response = await handler(request)
         except Exception:
             elapsed_ms = (time.monotonic() - start) * 1000
             self.logs.append(CallLog("tool", name, elapsed_ms, False))
@@ -250,6 +294,97 @@ def run_agent(
 
     try:
         for update in agent.stream({"messages": messages}, config=config, stream_mode="updates"):
+            for node_name, node_update in update.items():
+                node_messages = node_update.get("messages", []) if isinstance(node_update, dict) else []
+                if node_name == "model":
+                    steps_used += 1
+                    yield AgentEvent(
+                        "status",
+                        {"stage": "planning", "message": f"{steps_used}단계: 모델에게 다음 행동을 묻는다"},
+                    )
+                    for msg in node_messages:
+                        if isinstance(msg, AIMessage) and msg.tool_calls:
+                            yield AgentEvent(
+                                "status",
+                                {"stage": "analyzing", "message": f"도구 {len(msg.tool_calls)}건 실행 준비"},
+                            )
+                            for call in msg.tool_calls:
+                                yield AgentEvent(
+                                    "tool_call",
+                                    {"id": call.get("id", ""), "name": call.get("name", ""), "args": call.get("args", {})},
+                                )
+                        elif isinstance(msg, AIMessage):
+                            final_text = msg.content or ""
+                elif node_name == "tools":
+                    for msg in node_messages:
+                        if isinstance(msg, ToolMessage):
+                            content = msg.content if isinstance(msg.content, str) else json.dumps(msg.content, ensure_ascii=False)
+                            ok = "\"error\"" not in content[:20]
+                            summary = content if len(content) <= 200 else content[:200] + "..."
+                            yield AgentEvent("tool_result", {"id": msg.tool_call_id, "ok": ok, "summary": summary})
+    except RepeatedToolCallError as exc:
+        logger.warning("repeated_tool_call: %s", exc)
+        yield AgentEvent(
+            "done",
+            {"finish_reason": "repeated_tool_call", "partial": {"steps_used": steps_used, "text": final_text}},
+        )
+        return
+    except Exception as exc:  # LangChain/모델 서버 쪽 오류를 그대로 죽이지 않는다
+        logger.warning("llm_error: %s", exc)
+        yield AgentEvent("error", {"code": "llm_error", "message": str(exc)})
+        yield AgentEvent(
+            "done",
+            {"finish_reason": "cancelled", "partial": {"steps_used": steps_used, "text": final_text}},
+        )
+        return
+
+    yield AgentEvent("token", {"text": final_text})
+    yield AgentEvent(
+        "done",
+        {"finish_reason": finish_reason, "partial": {"steps_used": steps_used, "text": final_text}},
+    )
+
+    logger.info(
+        "agent_run_complete steps=%d model_calls=%d tool_calls=%d",
+        steps_used,
+        sum(1 for l in call_log_mw.logs if l.kind == "model"),
+        sum(1 for l in call_log_mw.logs if l.kind == "tool"),
+    )
+
+
+async def arun_agent(
+    user_message: str,
+    *,
+    history: list[dict[str, Any]] | None = None,
+    model=None,
+    max_steps: int | None = None,
+) -> AsyncIterator[AgentEvent]:
+    """``run_agent()``의 비동기 버전(PROJECT-SPEC.md 9절). app.py의
+    ``/agent/chat``이 쓴다. ``agent.stream()`` 대신 ``agent.astream()``을 쓰는
+    것만 다르다 — ``create_agent``가 만드는 그래프는 내부적으로 LangGraph이고,
+    ``astream()``은 클라이언트가 연결을 끊었을 때(이 제너레이터를 도는 태스크가
+    취소될 때) 모델 호출까지 실제로 취소한다(7단계 ``graph.astream()``과 같은
+    이유). 동기 ``run_agent()``는 테스트와 CLI가 계속 쓴다.
+    """
+
+    settings = get_settings()
+    max_steps = max_steps if max_steps is not None else settings.max_agent_steps
+
+    messages: list[dict[str, Any]] = list(history) if history else []
+    messages.append({"role": "user", "content": user_message})
+
+    agent, call_log_mw, repeat_guard_mw = build_agent(model=model)
+
+    yield AgentEvent("status", {"stage": "starting", "message": "LangChain 에이전트 실행을 시작한다"})
+
+    steps_used = 0
+    final_text = ""
+    finish_reason = "stop"
+
+    config: RunnableConfig = {"recursion_limit": max_steps * 2 + 2}
+
+    try:
+        async for update in agent.astream({"messages": messages}, config=config, stream_mode="updates"):
             for node_name, node_update in update.items():
                 node_messages = node_update.get("messages", []) if isinstance(node_update, dict) else []
                 if node_name == "model":

@@ -10,17 +10,21 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from docagent import events
 from docagent.config import Settings, get_settings
-from docagent.llm import LLMError, chat_stream, embed
+from docagent.llm import LLMError, achat_stream, embed
+
+logger = logging.getLogger("docagent.app")
 from docagent.rag.ingest import build_chunks, load_documents
 from docagent.rag.search import NO_EVIDENCE_MESSAGE, build_messages, retrieve
 from docagent.rag.store import (
@@ -88,7 +92,7 @@ def ingest():
     }
 
 
-def _chat_event_stream(question: str):
+async def _chat_event_stream(question: str, request: Request):
     yield events.status(events.STAGE_RETRIEVING, "관련 자료를 검색하는 중이다.")
 
     result = retrieve(
@@ -122,8 +126,19 @@ def _chat_event_stream(question: str):
     messages = build_messages(question, result.accepted)
 
     try:
-        for piece in chat_stream(messages, settings=_settings):
+        async for piece in achat_stream(messages, settings=_settings):
+            # 클라이언트가 이미 끊었는지 명시적으로 확인한다(2단계 app.py와 같은 이유).
+            # 다음 조각을 더 만들지 않고 더 빨리 멈출 수 있다.
+            if await request.is_disconnected():
+                logger.info("client disconnected mid-stream")
+                return
             yield events.token(piece)
+    except asyncio.CancelledError:
+        # StreamingResponse가 클라이언트 종료를 감지해 이 태스크를 직접 취소한 경우.
+        # 취소를 삼키지 않고 다시 raise한다 — 그래야 achat_stream의 finally가
+        # 모델 서버로 나가는 연결을 실제로 닫는다.
+        logger.info("stream task cancelled")
+        raise
     except LLMError as exc:
         yield events.error("model_call_failed", str(exc))
         yield events.done(events.FINISH_ERROR)
@@ -133,5 +148,5 @@ def _chat_event_stream(question: str):
 
 
 @app.post("/api/chat")
-def chat(req: ChatRequest):
-    return StreamingResponse(_chat_event_stream(req.question), media_type="text/event-stream")
+async def chat(req: ChatRequest, request: Request):
+    return StreamingResponse(_chat_event_stream(req.question, request), media_type="text/event-stream")

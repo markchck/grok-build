@@ -464,7 +464,7 @@ def ingest():
 ```
 
 ```python
-def _chat_event_stream(question: str):
+async def _chat_event_stream(question: str, request: Request):
     yield events.status(events.STAGE_RETRIEVING, "관련 자료를 검색하는 중이다.")
     result = retrieve(..., question=question, top_k=..., score_threshold=...)
     yield events.sources([...])                       # PROJECT-SPEC.md 4절 sources 이벤트
@@ -477,7 +477,9 @@ def _chat_event_stream(question: str):
 
     yield events.status(events.STAGE_WRITING, "검색된 자료를 근거로 답변을 작성하는 중이다.")
     messages = build_messages(question, result.accepted)
-    for piece in chat_stream(messages, settings=_settings):
+    async for piece in achat_stream(messages, settings=_settings):
+        if await request.is_disconnected():
+            return
         yield events.token(piece)
     yield events.done(events.FINISH_STOP)
 ```
@@ -486,6 +488,12 @@ def _chat_event_stream(question: str):
 통과한 청크)만 담는다 — 근거로 쓰지 않은 검색 결과까지 "출처"라고 보여주지 않기
 위해서다. `status` 이벤트의 `stage` 값은 PROJECT-SPEC.md에 고정된
 `retrieving`/`verifying`/`writing`을 그대로 쓴다.
+
+**`chat_stream()`이 아니라 `achat_stream()`을 쓰는 이유**: PROJECT-SPEC.md 9절 —
+클라이언트가 연결을 끊었을 때 모델 서버로 나가는 HTTP 스트림까지 실제로 취소하려면
+이벤트 루프가 그 스트림을 직접 닫을 수 있어야 한다(2단계와 같은 이유). 동기
+`chat_stream()`은 `docagent.llm`에 그대로 남아 있고, 스크립트나 서버 없이 확인하는
+용도로 계속 쓸 수 있다.
 
 ## 5. 실행과 결과 확인
 

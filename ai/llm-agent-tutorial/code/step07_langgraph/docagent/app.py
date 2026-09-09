@@ -40,7 +40,7 @@ from docagent.config import get_settings
 from docagent.events import done_event, error_event, sources_event, status_event, token_event
 from docagent.graph.build import build_graph
 from docagent.graph.nodes import NodeDeps
-from docagent.llm import LLMError, chat, chat_json
+from docagent.llm import LLMError, achat, achat_json
 from docagent.rag.search import dense_search, sparse_search
 from docagent.rag.store import get_client, make_chunk_id
 
@@ -55,8 +55,8 @@ def _build_deps() -> NodeDeps:
     return NodeDeps(
         dense_search=lambda q, *, limit=5, filter_expr="": dense_search(q, limit=limit, filter_expr=filter_expr),
         sparse_search=lambda q, *, limit=5, filter_expr="": sparse_search(q, limit=limit, filter_expr=filter_expr),
-        chat=chat,
-        json_chat=chat_json,
+        chat=achat,
+        json_chat=achat_json,
         app_base_url=settings.app_base_url,
     )
 

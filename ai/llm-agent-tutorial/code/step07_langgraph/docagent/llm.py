@@ -21,6 +21,7 @@ from openai import (
     APIError,
     APIStatusError,
     APITimeoutError,
+    AsyncOpenAI,
     OpenAI,
 )
 
@@ -142,6 +143,91 @@ def chat_json(
     """구조화된 JSON 출력을 요청한다. 서버 지원 여부는
     scripts/check_server_features.py(1단계)로 먼저 확인한다."""
     result = chat(
+        messages,
+        settings=settings,
+        temperature=temperature,
+        response_format={
+            "type": "json_schema",
+            "json_schema": {"name": schema_name, "schema": json_schema, "strict": True},
+        },
+    )
+    try:
+        return json.loads(result.text or "{}")
+    except json.JSONDecodeError as exc:
+        raise LLMError(
+            f"서버가 json_schema를 요청했는데도 유효한 JSON을 돌려주지 않았다: "
+            f"{result.text[:300]}"
+        ) from exc
+
+
+def _async_client(settings: Settings) -> AsyncOpenAI:
+    return AsyncOpenAI(
+        base_url=settings.openai_base_url,
+        api_key=settings.openai_api_key,
+        timeout=settings.request_timeout_seconds,
+    )
+
+
+async def achat(
+    messages: list[dict[str, Any]],
+    *,
+    settings: Settings | None = None,
+    temperature: float = 0.2,
+    max_tokens: int = 1024,
+    tools: list[dict[str, Any]] | None = None,
+    response_format: dict[str, Any] | None = None,
+) -> ChatResult:
+    """``chat()``의 비동기 버전(PROJECT-SPEC.md 9절). ``docagent/graph/nodes.py``의
+    ``answer``/``chitchat_answer`` 노드가 쓴다 — 클라이언트가 연결을 끊었을 때
+    이 호출을 실제로 취소하려면 ``AsyncOpenAI``로 연 연결을 이벤트 루프가 직접
+    닫을 수 있어야 하기 때문이다."""
+    settings = settings or get_settings()
+    client = _async_client(settings)
+    kwargs: dict[str, Any] = {
+        "model": settings.chat_model,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+    if tools:
+        kwargs["tools"] = tools
+        kwargs["tool_choice"] = "auto"
+    if response_format is not None:
+        kwargs["response_format"] = response_format
+
+    try:
+        completion = await client.chat.completions.create(**kwargs)
+    except APITimeoutError as exc:
+        raise LLMError(f"모델 서버 응답 시간 초과({settings.request_timeout_seconds}초)") from exc
+    except APIConnectionError as exc:
+        raise LLMError(f"모델 서버에 연결할 수 없다: {exc}") from exc
+    except APIStatusError as exc:
+        raise LLMError(f"모델 서버 오류 응답: {exc.status_code} {exc.message}") from exc
+    except APIError as exc:
+        raise LLMError(f"모델 서버 호출 실패: {exc}") from exc
+    finally:
+        await client.close()
+
+    choice = completion.choices[0]
+    return ChatResult(
+        text=choice.message.content or "",
+        finish_reason=choice.finish_reason,
+        tool_calls=[],
+        raw=completion.model_dump(),
+    )
+
+
+async def achat_json(
+    messages: list[dict[str, Any]],
+    *,
+    schema_name: str,
+    json_schema: dict[str, Any],
+    settings: Settings | None = None,
+    temperature: float = 0.0,
+) -> dict[str, Any]:
+    """``chat_json()``의 비동기 버전. ``docagent/graph/nodes.py``의
+    ``classify``/``verify`` 노드가 쓴다."""
+    result = await achat(
         messages,
         settings=settings,
         temperature=temperature,

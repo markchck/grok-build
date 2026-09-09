@@ -21,6 +21,7 @@ from openai import (
     APIError,
     APIStatusError,
     APITimeoutError,
+    AsyncOpenAI,
     OpenAI,
 )
 
@@ -129,6 +130,63 @@ def chat_stream(
         raise LLMError(f"모델 서버 오류 응답: {exc.status_code} {exc.message}") from exc
     except APIError as exc:
         raise LLMError(f"모델 서버 호출 실패: {exc}") from exc
+
+
+def _async_client(settings: Settings) -> AsyncOpenAI:
+    return AsyncOpenAI(
+        base_url=settings.openai_base_url,
+        api_key=settings.openai_api_key,
+        timeout=settings.request_timeout_seconds,
+    )
+
+
+async def achat(
+    messages: list[dict[str, Any]],
+    *,
+    settings: Settings | None = None,
+    temperature: float = 0.2,
+    max_tokens: int = 1024,
+    tools: list[dict[str, Any]] | None = None,
+    response_format: dict[str, Any] | None = None,
+) -> ChatResult:
+    """``chat()``의 비동기 버전(PROJECT-SPEC.md 9절). app.py가 쓴다 —
+    클라이언트가 연결을 끊었을 때 이 호출을 실제로 취소하려면 ``AsyncOpenAI``로
+    연 연결을 이벤트 루프가 직접 닫을 수 있어야 하기 때문이다."""
+    settings = settings or get_settings()
+    client = _async_client(settings)
+    kwargs: dict[str, Any] = {
+        "model": settings.chat_model,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+    if tools:
+        kwargs["tools"] = tools
+        kwargs["tool_choice"] = "auto"
+    if response_format is not None:
+        kwargs["response_format"] = response_format
+
+    try:
+        completion = await client.chat.completions.create(**kwargs)
+    except APITimeoutError as exc:
+        raise LLMError(f"모델 서버 응답 시간 초과({settings.request_timeout_seconds}초)") from exc
+    except APIConnectionError as exc:
+        raise LLMError(f"모델 서버에 연결할 수 없다: {exc}") from exc
+    except APIStatusError as exc:
+        raise LLMError(f"모델 서버 오류 응답: {exc.status_code} {exc.message}") from exc
+    except APIError as exc:
+        raise LLMError(f"모델 서버 호출 실패: {exc}") from exc
+    finally:
+        # 정상 종료·오류·취소(asyncio.CancelledError) 어느 경우에도 연결을 닫는다.
+        await client.close()
+
+    choice = completion.choices[0]
+    return ChatResult(
+        text=choice.message.content or "",
+        finish_reason=choice.finish_reason,
+        tool_calls=[],
+        raw=completion.model_dump(),
+    )
 
 
 def chat_json(

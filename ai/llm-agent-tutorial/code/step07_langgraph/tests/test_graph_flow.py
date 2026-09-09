@@ -8,11 +8,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
 
-from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from docagent.graph.build import build_graph
 from docagent.graph.nodes import NodeDeps
@@ -20,7 +21,7 @@ from docagent.llm import ChatResult, LLMError
 
 
 def _fixed_chat(text: str):
-    def chat_fn(messages, *, temperature: float = 0.2) -> ChatResult:
+    async def chat_fn(messages, *, temperature: float = 0.2) -> ChatResult:
         return ChatResult(text=text, finish_reason="stop")
 
     return chat_fn
@@ -34,7 +35,7 @@ def _fixed_json_chat(_result: dict):
     JSON이 기대하는 키를 담고 있지 않으면 규칙 기반 휴리스틱으로 넘어간다.
     """
 
-    def json_chat_fn(messages, *, schema_name, json_schema, temperature: float = 0.0) -> dict:
+    async def json_chat_fn(messages, *, schema_name, json_schema, temperature: float = 0.0) -> dict:
         return dict(_result)
 
     return json_chat_fn
@@ -63,7 +64,10 @@ class ChitchatRoutingTest(unittest.TestCase):
             app_base_url="http://localhost:8080",
         )
         app = build_graph(deps)
-        out = app.invoke({"question": "안녕!", "retrieved": [], "queries_tried": [], "trace": []})
+        # 그래프의 answer/chitchat_answer/classify/verify 노드가 async def다
+        # (PROJECT-SPEC.md 9절 — 서버 코드는 achat/achat_json을 쓴다). 그래서
+        # 여기서도 동기 invoke() 대신 ainvoke()를 asyncio.run()으로 돈다.
+        out = asyncio.run(app.ainvoke({"question": "안녕!", "retrieved": [], "queries_tried": [], "trace": []}))
         self.assertEqual(out["category"], "chitchat")
         self.assertEqual(out["answer_text"], "안녕하세요!")
         self.assertEqual(out["citations"], [])
@@ -81,9 +85,9 @@ class FactualRoutingTest(unittest.TestCase):
             min_sufficient_hits=2,
         )
         app = build_graph(deps)
-        out = app.invoke(
+        out = asyncio.run(app.ainvoke(
             {"question": "2분기 매출은?", "retrieved": [], "queries_tried": [], "trace": []}
-        )
+        ))
         self.assertEqual(out["category"], "factual")
         self.assertTrue(out["sufficient"])
         self.assertEqual(out["retrieval_round"], 0)  # 재검색 없이 바로 답했다
@@ -102,9 +106,9 @@ class FactualRoutingTest(unittest.TestCase):
             max_retrieval_rounds=2,
         )
         app = build_graph(deps)
-        out = app.invoke(
+        out = asyncio.run(app.ainvoke(
             {"question": "존재하지 않는 제품의 매출은?", "retrieved": [], "queries_tried": [], "trace": []}
-        )
+        ))
         self.assertFalse(out["sufficient"])
         self.assertEqual(out["retrieval_round"], 2)  # max_retrieval_rounds에서 멈췄다
         # 검색은 (초기 1회 + 재검색 2회) x (dense+sparse) = 6번 시도된 흔적이 trace에 남는다
@@ -128,7 +132,7 @@ class RetrievalDegradationTest(unittest.TestCase):
             min_sufficient_hits=2,
         )
         app = build_graph(deps)
-        out = app.invoke({"question": "질문", "retrieved": [], "queries_tried": [], "trace": []})
+        out = asyncio.run(app.ainvoke({"question": "질문", "retrieved": [], "queries_tried": [], "trace": []}))
         # sparse가 계속 실패해도 dense 결과만으로 정상 종료된다.
         self.assertTrue(out["answer_text"])
         self.assertTrue(any("실패" in t["message"] for t in out["trace"] if t["stage"] == "retrieving"))
@@ -145,49 +149,52 @@ class CheckpointResumeTest(unittest.TestCase):
 
         crash_flag = {"on": True}
 
-        def flaky_chat(messages, *, temperature: float = 0.2) -> ChatResult:
+        async def flaky_chat(messages, *, temperature: float = 0.2) -> ChatResult:
             if crash_flag["on"]:
                 raise LLMError("모델 서버 장애(테스트)")
             return ChatResult(text="복구 후 답변[S1].", finish_reason="stop")
 
-        with tempfile.TemporaryDirectory() as tmp:
-            db_path = str(Path(tmp) / "ckpt.sqlite")
-            config = {"configurable": {"thread_id": "t1"}}
+        async def _run() -> dict:
+            with tempfile.TemporaryDirectory() as tmp:
+                db_path = str(Path(tmp) / "ckpt.sqlite")
+                config = {"configurable": {"thread_id": "t1"}}
 
-            # --- 1차 실행: answer 노드에서 실패한다 ---
-            with SqliteSaver.from_conn_string(db_path) as saver:
-                deps1 = NodeDeps(
-                    dense_search=counting_dense,
-                    sparse_search=lambda q, *, limit=5, filter_expr="": hits,
-                    chat=flaky_chat,
-                    json_chat=_fixed_json_chat({"answer": "42"}),
-                    app_base_url="http://localhost:8080",
-                    min_sufficient_hits=2,
-                )
-                app1 = build_graph(deps1, checkpointer=saver)
-                with self.assertRaises(LLMError):
-                    app1.invoke(
-                        {"question": "질문", "retrieved": [], "queries_tried": [], "trace": []},
-                        config=config,
+                # --- 1차 실행: answer 노드에서 실패한다 ---
+                async with AsyncSqliteSaver.from_conn_string(db_path) as saver:
+                    deps1 = NodeDeps(
+                        dense_search=counting_dense,
+                        sparse_search=lambda q, *, limit=5, filter_expr="": hits,
+                        chat=flaky_chat,
+                        json_chat=_fixed_json_chat({"answer": "42"}),
+                        app_base_url="http://localhost:8080",
+                        min_sufficient_hits=2,
                     )
-                snapshot = app1.get_state(config)
-                self.assertEqual(snapshot.next, ("answer",))
-                self.assertEqual(dense_calls["n"], 1)
+                    app1 = build_graph(deps1, checkpointer=saver)
+                    with self.assertRaises(LLMError):
+                        await app1.ainvoke(
+                            {"question": "질문", "retrieved": [], "queries_tried": [], "trace": []},
+                            config=config,
+                        )
+                    snapshot = await app1.aget_state(config)
+                    self.assertEqual(snapshot.next, ("answer",))
+                    self.assertEqual(dense_calls["n"], 1)
 
-            # --- 2차 실행: 새 SqliteSaver(=새 프로세스를 흉내낸다), 장애 복구 ---
-            crash_flag["on"] = False
-            with SqliteSaver.from_conn_string(db_path) as saver:
-                deps2 = NodeDeps(
-                    dense_search=counting_dense,
-                    sparse_search=lambda q, *, limit=5, filter_expr="": hits,
-                    chat=flaky_chat,
-                    json_chat=_fixed_json_chat({"answer": "42"}),
-                    app_base_url="http://localhost:8080",
-                    min_sufficient_hits=2,
-                )
-                app2 = build_graph(deps2, checkpointer=saver)
-                result = app2.invoke(None, config=config)  # None: 중단 지점부터 재개
+                # --- 2차 실행: 새 AsyncSqliteSaver(=새 프로세스를 흉내낸다), 장애 복구 ---
+                crash_flag["on"] = False
+                async with AsyncSqliteSaver.from_conn_string(db_path) as saver:
+                    deps2 = NodeDeps(
+                        dense_search=counting_dense,
+                        sparse_search=lambda q, *, limit=5, filter_expr="": hits,
+                        chat=flaky_chat,
+                        json_chat=_fixed_json_chat({"answer": "42"}),
+                        app_base_url="http://localhost:8080",
+                        min_sufficient_hits=2,
+                    )
+                    app2 = build_graph(deps2, checkpointer=saver)
+                    result = await app2.ainvoke(None, config=config)  # None: 중단 지점부터 재개
+            return result
 
+        result = asyncio.run(_run())
         self.assertIn("복구 후 답변", result["answer_text"])
         # retrieve_dense는 1차 실행에서만 실행됐어야 한다 — 재개 시 다시 실행되지 않는다.
         self.assertEqual(dense_calls["n"], 1)

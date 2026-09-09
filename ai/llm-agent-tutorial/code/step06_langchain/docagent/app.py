@@ -32,8 +32,8 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from docagent.agent import run_agent
-from docagent.chains import answer_with_citations
+from docagent.agent import arun_agent
+from docagent.chains import aanswer_with_citations
 from docagent.config import get_settings
 from docagent.events import done_event, error_event, sources_event, status_event, token_event, tool_call_event, tool_result_event
 from docagent.rag.store import make_chunk_id
@@ -101,7 +101,7 @@ async def _rag_chat_stream(req: ChatRequest) -> AsyncIterator[str]:
     settings = get_settings()
     yield status_event("retrieving", f"'{req.message}' 관련 청크를 하이브리드 검색으로 찾는 중")
     try:
-        result, retrieved = answer_with_citations(req.message, settings=settings, top_k=req.top_k)
+        result, retrieved = await aanswer_with_citations(req.message, settings=settings, top_k=req.top_k)
     except Exception as exc:  # Milvus/모델 서버 오류
         yield error_event("retrieval_failed", f"검색 또는 답변 생성 중 오류가 발생했다: {exc}")
         yield done_event("stop")
@@ -125,7 +125,7 @@ async def _rag_chat_stream(req: ChatRequest) -> AsyncIterator[str]:
 
 async def _agent_chat_stream(req: AgentChatRequest) -> AsyncIterator[str]:
     """``/agent/chat`` — 3단계와 같은 이벤트 순서를 create_agent로 만든다."""
-    for event in run_agent(req.message):
+    async for event in arun_agent(req.message):
         if event.kind == "status":
             yield status_event(event.data["stage"], event.data["message"])
         elif event.kind == "tool_call":

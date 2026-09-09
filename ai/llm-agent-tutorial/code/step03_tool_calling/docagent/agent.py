@@ -25,7 +25,7 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterator
+from typing import Any, AsyncIterator, Awaitable, Callable, Iterator
 
 from docagent import llm
 from docagent.config import get_settings
@@ -80,6 +80,29 @@ def _default_chat_fn(
     판단) 여기서는 인자만 받고 그대로 둔다.
     """
     result = llm.chat(messages, settings=get_settings(), temperature=temperature, tools=tools)
+    return {
+        "role": "assistant",
+        "content": result.text or None,
+        "tool_calls": result.tool_calls or None,
+    }
+
+
+AsyncChatFn = Callable[..., Awaitable[dict[str, Any]]]
+
+
+async def _default_achat_fn(
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None = None,
+    tool_choice: str | dict[str, Any] | None = None,
+    temperature: float = 0.2,
+) -> dict[str, Any]:
+    """``llm.achat()``을 쓰는 비동기 어댑터(PROJECT-SPEC.md 9절).
+
+    app.py의 SSE 엔드포인트는 이 어댑터를 쓰는 ``arun_agent``를 부른다 —
+    클라이언트가 연결을 끊었을 때 모델 서버로 나가는 호출까지 실제로
+    취소하려면 이벤트 루프가 그 호출을 직접 취소할 수 있어야 하기 때문이다.
+    """
+    result = await llm.achat(messages, settings=get_settings(), temperature=temperature, tools=tools)
     return {
         "role": "assistant",
         "content": result.text or None,
@@ -218,6 +241,121 @@ def run_agent(
             yield AgentEvent("tool_result", {"id": call_id, "ok": result.ok, "summary": summary})
 
         # 도구 결과를 반영해서 다음 단계에서 모델을 다시 부른다.
+
+
+async def arun_agent(
+    user_message: str,
+    *,
+    history: list[dict[str, Any]] | None = None,
+    chat_fn: AsyncChatFn = _default_achat_fn,
+    max_steps: int | None = None,
+    max_seconds: int | None = None,
+) -> AsyncIterator[AgentEvent]:
+    """``run_agent()``의 비동기 버전(PROJECT-SPEC.md 9절). app.py가 쓴다.
+
+    로직은 ``run_agent()``와 완전히 같다 — 다른 점은 모델 호출을
+    ``await chat_fn(...)``으로 하는 것뿐이다. 이 ``await`` 지점이 있어야
+    클라이언트가 연결을 끊었을 때(이 제너레이터를 돌리는 태스크가 취소될 때)
+    그 취소가 ``achat`` 안의 ``finally``까지 전달되어 모델 서버로 나가는
+    HTTP 연결이 실제로 닫힌다. 동기 ``run_agent()``는 CLI·스크립트·단위
+    테스트가 계속 쓴다(둘을 나란히 두는 이유는 PROJECT-SPEC.md 9절 참고).
+    """
+
+    max_steps = max_steps if max_steps is not None else get_settings().max_agent_steps
+    max_seconds = max_seconds if max_seconds is not None else get_settings().max_agent_seconds
+
+    messages: list[dict[str, Any]] = list(history) if history else [
+        {"role": "system", "content": SYSTEM_PROMPT}
+    ]
+    messages.append({"role": "user", "content": user_message})
+
+    call_counts: dict[tuple[str, str], int] = {}
+    start = time.monotonic()
+    step = 0
+
+    while True:
+        step += 1
+
+        if step > max_steps:
+            yield AgentEvent("done", {"finish_reason": "max_steps"})
+            return
+
+        elapsed = time.monotonic() - start
+        if elapsed > max_seconds:
+            yield AgentEvent("done", {"finish_reason": "timeout"})
+            return
+
+        yield AgentEvent("status", {"stage": "planning", "message": f"{step}단계: 모델에게 다음 행동을 묻는다"})
+
+        try:
+            assistant_message = await chat_fn(messages, tools=TOOL_SPECS, tool_choice="auto")
+        except llm.LLMError as exc:
+            yield AgentEvent("error", {"code": "llm_error", "message": str(exc)})
+            yield AgentEvent("done", {"finish_reason": "cancelled"})
+            return
+
+        messages.append(assistant_message)
+        tool_calls = assistant_message.get("tool_calls")
+
+        if not tool_calls:
+            final_text = assistant_message.get("content") or ""
+            yield AgentEvent("token", {"text": final_text})
+            yield AgentEvent("done", {"finish_reason": "stop"})
+            return
+
+        yield AgentEvent(
+            "status",
+            {"stage": "analyzing", "message": f"도구 {len(tool_calls)}건 실행 준비"},
+        )
+
+        for call in tool_calls:
+            call_id = call.get("id", "")
+            fn = call.get("function", {})
+            name = fn.get("name", "")
+            raw_arguments = fn.get("arguments", "{}")
+
+            try:
+                args_dict = json.loads(raw_arguments) if raw_arguments else {}
+            except json.JSONDecodeError:
+                args_dict = None
+
+            yield AgentEvent(
+                "tool_call",
+                {"id": call_id, "name": name, "args": args_dict if args_dict is not None else {}},
+            )
+
+            if args_dict is None:
+                error_content = json.dumps(
+                    {
+                        "error": "invalid_json",
+                        "message": "arguments가 올바른 JSON이 아니다. 다시 만들어서 호출해달라.",
+                    },
+                    ensure_ascii=False,
+                )
+                messages.append(
+                    {"role": "tool", "tool_call_id": call_id, "name": name, "content": error_content}
+                )
+                yield AgentEvent("tool_result", {"id": call_id, "ok": False, "summary": "잘못된 JSON 인자"})
+                continue
+
+            key = (name, _normalize_args(args_dict))
+            call_counts[key] = call_counts.get(key, 0) + 1
+
+            if call_counts[key] > REPEAT_LIMIT:
+                yield AgentEvent(
+                    "tool_result",
+                    {"id": call_id, "ok": False, "summary": "같은 도구·인자 반복 호출 감지"},
+                )
+                yield AgentEvent("done", {"finish_reason": "repeated_tool_call"})
+                return
+
+            result = run_tool(name, args_dict)
+            messages.append(
+                {"role": "tool", "tool_call_id": call_id, "name": name, "content": result.content}
+            )
+
+            summary = result.content if len(result.content) <= 200 else result.content[:200] + "..."
+            yield AgentEvent("tool_result", {"id": call_id, "ok": result.ok, "summary": summary})
 
 
 def run_agent_collect(

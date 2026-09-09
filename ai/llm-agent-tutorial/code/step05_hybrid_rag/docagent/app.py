@@ -13,20 +13,24 @@ token 이벤트로 다시 잘라 보낸다. 진짜 토큰 단위 스트리밍(2�
 
 from __future__ import annotations
 
+import asyncio
 import html
+import logging
 import re
 from pathlib import Path
 from typing import AsyncIterator
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from docagent.config import get_settings
 from docagent.events import done_event, error_event, sources_event, status_event, token_event
-from docagent.llm import LLMError, chat
+from docagent.llm import LLMError, achat
 from docagent.rag import citations
+
+logger = logging.getLogger("docagent.app")
 from docagent.rag.search import dense_search, hybrid_search, sparse_search
 from docagent.rag.store import get_client, make_chunk_id
 
@@ -100,7 +104,14 @@ async def _chat_stream(req: ChatRequest) -> AsyncIterator[str]:
     ]
 
     try:
-        result = chat(messages, settings=get_settings())
+        # achat()(동기 chat()이 아니라)을 쓰는 이유는 PROJECT-SPEC.md 9절의 취소
+        # 요구사항 때문이다: 클라이언트가 연결을 끊으면 이 코루틴을 기다리는
+        # 태스크가 취소되고, 그 취소가 achat 안의 finally까지 전달되어 모델
+        # 서버로 나가는 HTTP 연결이 실제로 닫힌다.
+        result = await achat(messages, settings=get_settings())
+    except asyncio.CancelledError:
+        logger.info("stream task cancelled during model call")
+        raise
     except LLMError as exc:
         yield error_event("llm_call_failed", str(exc))
         yield done_event("stop")
