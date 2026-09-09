@@ -280,16 +280,25 @@ def run_agent(
                             yield AgentEvent("tool_result", {"id": msg.tool_call_id, "ok": ok, "summary": summary})
     except RepeatedToolCallError as exc:
         logger.warning("repeated_tool_call: %s", exc)
-        yield AgentEvent("done", {"finish_reason": "repeated_tool_call"})
+        yield AgentEvent(
+            "done",
+            {"finish_reason": "repeated_tool_call", "partial": {"steps_used": steps_used, "text": final_text}},
+        )
         return
     except Exception as exc:  # LangChain/모델 서버 쪽 오류를 그대로 죽이지 않는다
         logger.warning("llm_error: %s", exc)
         yield AgentEvent("error", {"code": "llm_error", "message": str(exc)})
-        yield AgentEvent("done", {"finish_reason": "cancelled"})
+        yield AgentEvent(
+            "done",
+            {"finish_reason": "cancelled", "partial": {"steps_used": steps_used, "text": final_text}},
+        )
         return
 
     yield AgentEvent("token", {"text": final_text})
-    yield AgentEvent("done", {"finish_reason": finish_reason})
+    yield AgentEvent(
+        "done",
+        {"finish_reason": finish_reason, "partial": {"steps_used": steps_used, "text": final_text}},
+    )
 
     logger.info(
         "agent_run_complete steps=%d model_calls=%d tool_calls=%d",
@@ -304,10 +313,12 @@ def run_agent_collect(user_message: str, *, model=None, max_steps: int | None = 
     final_text = ""
     steps_used = 0
     for event in run_agent(user_message, model=model, max_steps=max_steps):
-        if event.kind == "status" and event.data.get("stage") == "planning":
-            steps_used += 1
         if event.kind == "token":
             final_text = event.data["text"]
         if event.kind == "done":
             finish_reason = event.data["finish_reason"]
+            # steps_used는 실행 중 센 값을 done 이벤트에서 그대로 받는다.
+            # status 이벤트 개수로 역산하면 이벤트를 하나 더하거나 빼는 순간
+            # 조용히 틀린 값이 된다(PROJECT-SPEC.md 4절).
+            steps_used = event.data.get("partial", {}).get("steps_used", 0)
     return AgentRunResult(finish_reason=finish_reason, final_text=final_text, steps_used=steps_used)

@@ -29,6 +29,9 @@
 
 ```
 event: status
+data: {"stage": "starting", "message": "LangChain 에이전트 실행을 시작한다"}
+
+event: status
 data: {"stage": "planning", "message": "1단계: 모델에게 다음 행동을 묻는다"}
 
 event: status
@@ -702,10 +705,10 @@ curl -N -X POST http://localhost:8080/agent/chat \
   -d '{"message": "2분기 노트북 서울 매출 합계 알려줘"}'
 ```
 
-1절의 예시와 같은 순서(`status planning` → `status analyzing` → `tool_call`
-→ `tool_result` → `status planning` → `token` → `done`)로 이벤트가 오면
-정상이다. `/chat`도 같은 방식으로 확인한다(1절 참고). 실제로 실행해
-확인했다.
+1절의 예시와 같은 순서(`status starting` → `status planning` →
+`status analyzing` → `tool_call` → `tool_result` → `status planning` →
+`token` → `done`)로 이벤트가 오면 정상이다. `/chat`도 같은 방식으로
+확인한다(1절 참고). 실제로 실행해 확인했다.
 
 ### 5-2. 5단계·3단계와의 비교
 
@@ -725,7 +728,7 @@ python scripts/compare_with_step05.py "2분기 노트북 매출이 둔화된 이
 -> 순위까지 완전히 같다.
 
 === 도구 호출 에이전트 비교: '2분기 노트북 서울 매출 합계 알려줘' ===
-6단계(LangChain create_agent): finish_reason=stop, steps_used=3
+6단계(LangChain create_agent): finish_reason=stop, steps_used=2
 3단계(직접 구현 while 루프): finish_reason=stop, steps_used=2
 -> finish_reason이 같다.
 ```
@@ -733,16 +736,58 @@ python scripts/compare_with_step05.py "2분기 노트북 매출이 둔화된 이
 검색 결과는 청크 ID 순서까지 완전히 일치했다 — 같은 청킹 규칙, 같은
 임베딩(스텁), 같은 RRF 결합(`k=60`)을 쓰므로 당연한 결과지만, "프레임워크를
 바꿔도 검색 알고리즘 자체는 바뀌지 않는다"는 것을 코드로 확인한 것이다.
-`finish_reason`도 일치했다. `steps_used`(모델을 부른 횟수 집계)는 3 대
-2로 다른데, 이는 알고리즘 차이가 아니라 **집계 방식** 차이다 — 6단계
-`run_agent`는 `stream_mode="updates"`가 만드는 `model` 노드 이벤트 수를
-세고, 3단계는 `while` 루프의 반복 횟수를 센다. 둘 다 이 스텁 서버 각본
-(도구 호출 1회 후 최종 답변)에서는 "모델을 2번 부른다"가 맞는 값이고,
-6단계 쪽 집계 로직에 3으로 잡히는 차이가 있다는 것을 이 비교로 실제로
-발견했다 — [확인 필요: `run_agent`의 `steps_used` 집계가 시작 시점의
-`status planning` 이벤트까지 함께 세는 것이 원인으로 보이나, 이 문서
-작성 시점에 원인을 완전히 특정해 수정하지는 않았다. 값 자체가 서비스
-동작(`finish_reason`, 실제 도구 호출·답변)에 영향을 주지는 않는다].
+`finish_reason`과 `steps_used`(모델을 부른 횟수 집계) 모두 일치했다.
+
+이 비교로 처음 실행했을 때는 `steps_used`가 3 대 2로 어긋났다. 원인은
+알고리즘 차이가 아니라 **버그**였다 — `docagent/agent.py`의 `run_agent`가
+루프를 돌기 전에 `stage: "planning"`인 시작 안내 이벤트
+(`"LangChain 에이전트 실행을 시작한다"`)를 한 번 더 내보내는데,
+`run_agent_collect`는 `stage == "planning"`인 `status` 이벤트 수를 그대로
+세서 `steps_used`로 쓰고 있었다 — 실제 모델 호출(`model` 노드) 횟수가
+아니라 이 시작 안내 이벤트까지 함께 세어 1이 더 많이 잡혔다. 3단계의
+`run_agent`는 이런 시작 전용 이벤트를 내보내지 않으므로 이 문제가 없다.
+
+**고친 내용은 두 가지다.**
+
+첫째, 시작 안내 이벤트의 `stage`를 `"planning"`에서 `"starting"`으로 바꿨다.
+`stage == "planning"`인 이벤트가 실제 모델 호출 시점에만 나오게 하기 위해서다.
+`starting`은 PROJECT-SPEC.md 4절의 `status.stage` 목록에 추가했다 — 실행을
+시작했지만 아직 첫 모델 호출 전인 구간을 가리킨다.
+
+둘째, 이것이 더 중요한 수정이다. **집계값을 이벤트 개수로 역산하는 방식 자체를
+버렸다.** `stage` 이름을 바꾸는 것만으로는 같은 종류의 버그가 다시 생긴다 —
+누군가 나중에 `planning` 이벤트를 하나 더 내보내는 순간 `steps_used`는 다시
+조용히 틀린 값이 된다. 소비자가 이벤트를 세는 방식은 생산자가 이벤트를
+하나 더하거나 빼면 깨지는데, 그 깨짐이 예외가 아니라 **틀린 숫자**로 나타나기
+때문에 알아차리기 어렵다.
+
+그래서 `run_agent`가 실행 중 이미 세고 있는 `steps_used`를 `done` 이벤트의
+`partial`에 실어 보내고, `run_agent_collect`는 그 값을 그대로 읽는다.
+값을 아는 쪽이 값을 전달하고, 받는 쪽은 되짚지 않는다.
+
+```python
+# docagent/agent.py — 값을 아는 쪽이 실어 보낸다
+yield AgentEvent(
+    "done",
+    {"finish_reason": finish_reason, "partial": {"steps_used": steps_used, "text": final_text}},
+)
+
+# 받는 쪽은 세지 않고 읽기만 한다
+if event.kind == "done":
+    finish_reason = event.data["finish_reason"]
+    steps_used = event.data.get("partial", {}).get("steps_used", 0)
+```
+
+`done` 이벤트의 `partial` 필드는 8단계에서 부분 결과를 담으려고 추가한 선택
+필드다(PROJECT-SPEC.md 4절). 이 값을 모르는 클라이언트는 그냥 무시하면 되므로
+앞 단계와의 호환이 깨지지 않는다. 이 규칙도 PROJECT-SPEC.md 4절에 적어
+이후 단계가 같은 실수를 반복하지 않게 했다.
+
+**검증**: `pytest` 17개 통과, 스텁 서버에 붙여 `run_agent_collect`가
+`finish_reason=stop, steps_used=2`를 반환하는 것과 이벤트 순서가
+`status starting → status planning → status analyzing → tool_call →
+tool_result → status planning → token → done`인 것을 실제로 확인했다.
+`steps_used`는 3단계와 같은 2다.
 
 ### 5-3. 단위 테스트
 
@@ -830,32 +875,44 @@ background compaction/index build failed; will retry on next flush
 ValueError: vector column must be FixedSizeList, got binary
 ```
 
-**대조 실험**: 같은 pymilvus 3.0.1 / milvus-lite 3.2.1 조합에서, 5단계가
-`pymilvus`로 직접 선언한 BM25 하이브리드 스키마는 같은 절차(적재 ->
-프로세스 종료 -> 새 프로세스에서 재연결 -> 검색)로 **문제없이 동작했다**
-(4개 문서가 그대로 검색됐다). 즉 이 오류는 Milvus Lite 자체의 일반적인
-한계가 아니라, `langchain_milvus.Milvus`가 하이브리드 컬렉션을 선언하는
-방식에 특정된 문제로 보인다. 인덱스 파라미터를 5단계와 같은 값
-(`SPARSE_INVERTED_INDEX`/`BM25`, `bm25_k1=1.2`, `bm25_b=0.75`)으로 직접
-지정해도 같은 오류가 재현됐다 — 인덱스 파라미터 차이가 원인은 아니었다.
-[확인 필요: langchain-milvus 0.4.0이 Milvus Lite 3.2.1에 하이브리드
-컬렉션을 만드는 정확한 내부 경로. LangChain 공식 통합 문서(참고 문서의
-`langchain-milvus BM25BuiltInFunction` 항목, 웹 검색 결과 요약 기준)에는
-"전문(full-text) 검색은 Milvus Standalone/Distributed에서 지원되고
-**Milvus Lite에서는 지원되지 않으며, 로드맵에 있다**"는 문구가 있다 —
-같은 프로세스 안에서 flush 없이 조회하는 것까지는 됐지만, flush나
-재연결에서 깨지는 이번 재현 결과가 바로 이 "Milvus Lite 미지원" 상태의
-한 단면일 가능성이 있다. 이 문서를 실제로 fetch해 확정하지는 못했다
-(사내 네트워크 정책으로 `docs.langchain.com`/`python.langchain.com`
-접속이 막혀 있었다 — 검색 결과 요약으로만 확인했다).
+**대조 실험(초기 결론, 틀렸음)**: 처음에는 여기서 "5단계가 `pymilvus`로
+직접 선언한 스키마는 같은 절차로 문제없이 동작하니 이 오류는
+`langchain_milvus.Milvus`가 하이브리드 컬렉션을 선언하는 방식에 특정된
+문제"라고 결론 내렸다. 이 결론은 **틀렸다** — 이후 별도로 pymilvus만으로
+최소 재현 스키마(pk/dense/text/sparse 네 필드만)를 만들어 같은 절차를
+반복했더니, langchain-milvus를 전혀 쓰지 않았는데도 같은 오류가
+재현됐다. 직접 실험해 확인한 결과는 다음과 같다.
 
-**대응**: `docagent/app.py`는 FastAPI `startup` 이벤트에서 "컬렉션이
-없으면 적재한다"를 수행하고, 그 결과로 만들어진 `Milvus` 인스턴스를
-`docagent.rag.search` 모듈 전역에 그대로 유지한다 — **적재와 서비스가
-같은 프로세스 안에서, 재연결이나 flush 없이** 계속 이어지게 하는
-우회책이다. 실제 운영에서는 Milvus Lite가 아니라 진짜 Milvus 서버로
-이 문제가 재현되는지 별도로 확인해야 한다 — 이 장은 Milvus Lite로만
-검증했다.
+| 구성 | 새 프로세스에서 sparse/hybrid 검색 |
+| --- | --- |
+| 5단계 코드의 실제 스키마(pymilvus 2.6.17로 직접 선언) | **동작한다**(여러 번 재확인) |
+| 최소 재현 스키마(pk/dense/text/sparse만, pymilvus 2.6.17) | 실패 |
+| 같은 최소 재현 스키마, pymilvus 3.0.1 | 실패 |
+| `flush()` 호출을 뺀 경우 | 여전히 실패 |
+| 필드 선언 순서를 5단계와 같게 바꾼 경우 | 여전히 실패 |
+| langchain-milvus 0.4.0이 만든 컬렉션(이 장) | 실패 |
+
+**즉 이 오류는 langchain-milvus 고유의 문제가 아니다.** 순수 pymilvus로
+만든 컬렉션에서도 재현된다. pymilvus 버전, `flush()` 호출 여부, 필드
+선언 순서는 모두 원인이 아님을 실험으로 배제했다. 반대로 5단계가 실제로
+쓰는 스키마는 같은 조건에서 안정적으로 동작한다. **두 구성의 어떤
+차이가 이 경계를 가르는지는 특정하지 못했다** — 원인을 아는 것처럼
+쓰지 않는다.
+
+[확인 필요: 이 오류를 유발하는 정확한 조건. 그리고 Milvus
+standalone(Docker로 띄운 진짜 서버)에서도 같은 문제가 있는지 — 이
+장은 Milvus Lite로만 확인했고 standalone 대상 실행은 검증하지 않았다]
+
+**대응(우회책)**: `docagent/app.py`는 FastAPI `startup` 이벤트에서
+"컬렉션이 없으면 적재한다"를 수행하고, 그 결과로 만들어진 `Milvus`
+인스턴스를 `docagent.rag.search` 모듈 전역에 그대로 유지한다 —
+**적재와 서비스를 같은 프로세스 안에 두어 재연결이나 flush를 피하는**
+방식이다. 이것은 원인을 고친 것이 아니라 **원인을 모른 채 증상을
+피한 우회책**이다 — 재연결이나 flush가 왜 실패하는지 모르는 채로,
+그 상황 자체가 일어나지 않게만 만들었다. 하이브리드 검색을 실제로
+쓰려면 이 우회책에 기대지 말고 Milvus standalone(Docker)을 권한다.
+Milvus Lite는 이 우회책이 통하는 범위 안에서만, 즉 5단계처럼 적재와
+검색을 같은 프로세스에서 끝내는 학습용 구성에 한해 쓸 수 있다.
 
 ### 6-3. `@tool` 함수가 던진 예외는 기본적으로 그대로 전파된다
 
@@ -931,11 +988,14 @@ RecursiveCharacterTextSplitter`로 바꿔 보고, `scripts/compare_with_step05.p
   규칙은 내장 미들웨어만으로 충분하지 않을 수 있다.
 - 인용 검증, SSE 이벤트 스키마처럼 "이 프로젝트만의 요구사항"은 프레임워크를
   바꿔도 저절로 생기지 않는다 — 5단계 코드를 그대로 재사용해야 했다.
-- LangChain·Milvus Lite 조합에서 실제로 재현한 두 가지 실패(임베딩
-  토크나이저의 숨은 네트워크 요청, 하이브리드 컬렉션의 flush/재연결
-  실패)는 "프레임워크가 배관을 대신해 준다"는 편리함이 "그 배관 안에서
-  무슨 일이 일어나는지 더 알기 어려워진다"는 대가와 함께 온다는 것을
-  보여준다.
+- 임베딩 토크나이저의 숨은 네트워크 요청은 실제로 재현했고 원인도
+  특정했다(6-1절) — "프레임워크가 배관을 대신해 준다"는 편리함이 "그
+  배관 안에서 무슨 일이 일어나는지 더 알기 어려워진다"는 대가와 함께
+  온다는 것을 보여준다. Milvus Lite 하이브리드 컬렉션의 flush/재연결
+  실패(6-2절)도 실제로 재현했지만, 정확한 원인은 이 문서 작성 시점까지
+  특정하지 못했다 — pymilvus 최소 재현 스키마에서도 같은 오류가
+  나는 것까지만 확인했고, langchain-milvus 탓이라고 단정할 근거는
+  없다.
 
 **확인 질문**
 
@@ -971,8 +1031,7 @@ RecursiveCharacterTextSplitter`로 바꿔 보고, `scripts/compare_with_step05.p
   - https://reference.langchain.com/python/langchain/agents/middleware/types/wrap_model_call
   - https://reference.langchain.com/python/langchain/agents/middleware/types/AgentMiddleware/wrap_tool_call
   - https://reference.langchain.com/python/langchain-milvus/function/BM25BuiltInFunction
-  - https://milvus.io/docs/full_text_search_with_langchain.md (Milvus Lite의 전문 검색 미지원 관련 문구, 검색 결과 요약 기준)
-- Milvus Lite + langchain-milvus 하이브리드 컬렉션의 flush/재연결 실패(`vector column must be FixedSizeList, got binary`): 이 문서 작성 중 milvus-lite 3.2.1 + pymilvus 3.0.1 + langchain-milvus 0.4.0 조합으로 직접 재현했다(6-2절). 원인이 되는 langchain-milvus 내부 경로까지는 특정하지 못했다.
+- Milvus Lite 하이브리드(dense+sparse) 컬렉션의 flush/재연결 실패(`vector column must be FixedSizeList, got binary`): milvus-lite 3.2.1 + pymilvus 2.6.17/3.0.1 조합으로 직접 재현했다(6-2절) — langchain-milvus 0.4.0이 만든 컬렉션과, langchain-milvus를 전혀 쓰지 않은 순수 pymilvus 최소 재현 스키마 양쪽 모두에서. 정확한 원인은 특정하지 못했다(6-2절, `[확인 필요]` 참고).
 - `OpenAIEmbeddings`의 `tiktoken` 원격 다운로드 시도(`openaipublic.blob.core.windows.net`): 이 문서 작성 환경(egress 제한)에서 직접 재현했다(6-1절). `check_embedding_ctx_length` 옵션은 `langchain_openai/embeddings/base.py` 소스에서 확인했다.
 - `docs/02-fastapi-chat.md` 2-6절(HTTP 미들웨어와 에이전트 미들웨어 비교표) — 이 장 2-7절은 그 표를 그대로 이어받아 채웠다.
 
@@ -983,10 +1042,14 @@ RecursiveCharacterTextSplitter`로 바꿔 보고, `scripts/compare_with_step05.p
 > Milvus Lite를 조합해 `/chat`, `/agent/chat`, `/sources/{doc_id}`
 > 세 엔드포인트를 실제 HTTP 요청으로 실행하고 SSE 이벤트 순서를
 > 확인했다. `scripts/compare_with_step05.py`를 실제로 실행해 5단계·
-> 3단계와의 비교 결과(5-2절)를 얻었다. 6절의 두 실패 상황은 모두 이
-> 환경에서 실제로 재현한 것이며, 재현되지 않는 환경이 있을 수 있다는
-> 점을 본문에 명시했다. **실제 LLM 모델 서버, 실제 Milvus 서버(Standalone/
-> 클러스터, Milvus Lite가 아닌)를 대상으로 한 실행은 검증하지 않았다** —
+> 3단계와의 비교 결과(5-2절)를 얻었다 — 이 비교로 `run_agent`의
+> `steps_used` 집계 버그(시작 안내 이벤트를 모델 호출로 잘못 세던 것)를
+> 실제로 찾아 `docagent/agent.py`를 고쳤고, 고친 뒤 다시 실행해
+> `steps_used`가 3단계와 같은 값이 되는 것을 확인했다. 6절의 두 실패
+> 상황은 모두 이 환경에서 실제로 재현한 것이며, 재현되지 않는 환경이
+> 있을 수 있다는 점을 본문에 명시했다. **실제 LLM 모델 서버, 실제
+> Milvus 서버(Standalone/클러스터, Milvus Lite가 아닌)를 대상으로 한
+> 실행은 검증하지 않았다** —
 > 스텁 서버는 모델이 아니므로 답변 품질과 실제 서버별 도구 호출·구조화
 > 출력 지원 범위는 확인되지 않는다. 웹 UI(`static/`)는 5단계 파일을
 > 그대로 재사용했고 `/chat` 경로 호환은 확인했지만 브라우저에서 직접

@@ -119,7 +119,13 @@ DOCAGENT_TRACE_PROJECT_NAME=docagent
 | `error` | `{"code","message"}` | 오류 |
 | `done` | `{"finish_reason":"...", "partial"?:{...}}` | 종료. `partial`은 8단계에서 추가한 선택 필드로, 한도 초과 등으로 중간에 멈췄을 때의 부분 결과(`text`, `steps_used`, `tokens_used`, `tokens_estimated`)를 담는다. 기존 필드(`finish_reason`)는 그대로이므로 이 필드를 모르는 이전 단계 클라이언트도 그대로 동작한다 |
 
-`status.stage` 값도 고정한다: `planning`, `retrieving`, `analyzing`, `verifying`, `writing`.
+`status.stage` 값도 고정한다: `starting`, `planning`, `retrieving`, `analyzing`, `verifying`, `writing`.
+(`starting`은 6단계에서 추가했다 — 실행을 시작했지만 아직 첫 모델 호출 전인 구간을 가리킨다.
+이 값을 모르는 클라이언트는 다른 `status`와 똑같이 취급하면 되므로 하위 호환이 깨지지 않는다.)
+
+**집계값은 이벤트 개수로 역산하지 않는다.** `steps_used`처럼 실행 중 세는 값은 그 값을 아는
+쪽이 `done` 이벤트의 `partial`에 담아 보낸다. 소비자가 `status` 이벤트를 세서 되짚는 방식은
+이벤트를 하나 더하거나 빼는 순간 조용히 틀린 값을 내므로 쓰지 않는다.
 
 **진행 표시는 모델 내부 사고 원문이 아니다.** 위 이벤트는 애플리케이션이 관측한 실제 실행 사실만 담는다.
 
