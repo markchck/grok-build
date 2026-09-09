@@ -79,6 +79,15 @@ MAX_AGENT_SECONDS=120
 # 8단계부터 사용
 MAX_AGENT_TOKENS=4000
 DOCAGENT_STATE_DB=./data/hitl_state.db
+
+# 9단계부터 사용 (트레이싱)
+# 주의: 접두사를 DOCAGENT_로 붙인다. phoenix.otel.register()가
+# PHOENIX_COLLECTOR_ENDPOINT, PHOENIX_PROJECT_NAME을 자기 환경 변수로 이미
+# 읽는다(phoenix.otel 소스로 확인) — Milvus 때와 같은 이유로 접두사 없는
+# 이름을 그대로 쓰지 않는다.
+DOCAGENT_TRACING_ENABLED=false
+DOCAGENT_PHOENIX_ENDPOINT=http://localhost:6006/v1/traces
+DOCAGENT_TRACE_PROJECT_NAME=docagent
 ```
 
 새 환경 변수가 필요한 장은 위 목록에 **추가만** 하고 기존 이름을 바꾸지 않는다.

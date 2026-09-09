@@ -240,7 +240,7 @@ def run_agent(
 
     agent, call_log_mw, repeat_guard_mw = build_agent(model=model)
 
-    yield AgentEvent("status", {"stage": "planning", "message": "LangChain 에이전트 실행을 시작한다"})
+    yield AgentEvent("status", {"stage": "starting", "message": "LangChain 에이전트 실행을 시작한다"})
 
     steps_used = 0
     final_text = ""

@@ -155,6 +155,22 @@ def set_output(span: Span, value: str) -> None:
     span.set_attribute(Attr.OUTPUT_VALUE, value)
 
 
+def mark_error(span: Span, code: str, message: str) -> None:
+    """스팬을 오류로 표시한다.
+
+    ``traced_span``은 컨텍스트 매니저 **밖으로 예외가 올라올 때만** 스팬을
+    자동으로 오류 상태로 남긴다(``except Exception`` 블록 참고). 이 장의
+    app.py처럼 오류를 잡아서 SSE ``error`` 이벤트로 바꾸고 조용히
+    반환하는 코드(3단계부터의 설계 — 예외를 그대로 올리지 않고 이벤트로
+    바꾼다)에서는 예외가 스팬 밖으로 나가지 않으므로, 이 함수로 **직접**
+    표시해야 한다. 이 사실을 모르면 "분명히 오류가 났는데 트레이스에는
+    전부 정상으로 보인다"는 혼란에 빠진다 — 9장 "실패 상황 실습" 참고.
+    """
+    span.set_status(Status(StatusCode.ERROR, message))
+    span.set_attribute("error.code", code)
+    span.set_attribute(Attr.OUTPUT_VALUE, f"[{code}] {message}")
+
+
 def set_llm_usage(
     span: Span,
     *,

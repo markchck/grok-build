@@ -44,7 +44,7 @@ from docagent.middleware import RequestContextMiddleware
 from docagent.rag import citations
 from docagent.rag.search import dense_search, hybrid_search, sparse_search
 from docagent.rag.store import get_client, make_chunk_id
-from docagent.tracing import SpanKind, init_tracing, set_llm_usage, set_output, traced_span
+from docagent.tracing import SpanKind, init_tracing, mark_error, set_llm_usage, set_output, traced_span
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 STATIC_DIR = BASE_DIR / "static"
@@ -143,6 +143,11 @@ async def _chat_stream_body(req: ChatRequest, root_span) -> AsyncIterator[str]:
         else:
             hits = hybrid_search(req.message, limit=req.top_k)
     except Exception as exc:  # Milvus 연결 실패 등
+        # 주의: 이 except가 예외를 삼키고 SSE error 이벤트로 바꾸므로, 예외가
+        # traced_span의 with 블록 밖으로 올라가지 않는다 — 그래서 root_span을
+        # 명시적으로 오류로 표시해야 한다(mark_error가 없으면 트레이스에는
+        # 이 요청이 "정상 종료"로 보인다. 9장 6절에서 실제로 재현한다).
+        mark_error(root_span, "retrieval_failed", str(exc))
         yield error_event("retrieval_failed", f"검색 중 오류가 발생했다: {exc}")
         yield done_event("stop")
         return
@@ -170,6 +175,7 @@ async def _chat_stream_body(req: ChatRequest, root_span) -> AsyncIterator[str]:
     try:
         result = chat(messages, settings=get_settings())
     except LLMError as exc:
+        mark_error(root_span, "llm_call_failed", str(exc))
         yield error_event("llm_call_failed", str(exc))
         yield done_event("stop")
         return
