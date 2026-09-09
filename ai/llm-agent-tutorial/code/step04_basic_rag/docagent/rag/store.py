@@ -51,8 +51,10 @@ def collection_exists(client: MilvusClient, collection_name: str) -> bool:
 def create_chunks_collection(
     client: MilvusClient, collection_name: str, dense_dim: int
 ) -> None:
-    """4단계 스키마로 컬렉션을 만든다. 이미 있으면 아무것도 하지 않는다."""
+    """4단계 스키마로 컬렉션을 만든다. 이미 있으면 검색 가능한 상태로 올리기만 한다."""
     if client.has_collection(collection_name):
+        # 이미 있어도 프로세스를 새로 띄우면 상태가 "released"일 수 있으므로 load는 매번 한다.
+        client.load_collection(collection_name)
         return
 
     schema = client.create_schema(auto_id=False, enable_dynamic_field=False)
@@ -77,6 +79,10 @@ def create_chunks_collection(
         schema=schema,
         index_params=index_params,
     )
+    # 컬렉션을 만들기만 하면 상태가 "released"라서 검색·조회가 거부된다
+    # (MilvusException code=101: call load() before search/get/query).
+    # 검색 가능한 상태로 올리려면 load_collection을 명시적으로 호출해야 한다.
+    client.load_collection(collection_name)
 
 
 def drop_collection(client: MilvusClient, collection_name: str) -> None:
@@ -155,7 +161,9 @@ def search_dense(
         entity = hit.get("entity", {})
         hits.append(
             SearchHit(
-                pk=hit["id"],
+                # 결과의 primary key는 "id"가 아니라 **기본 키 필드의 이름**을 키로 쓴다.
+                # 이 스키마에서 기본 키 필드 이름이 "pk"이므로 hit["pk"]다.
+                pk=hit["pk"],
                 score=float(hit["distance"]),
                 text=entity.get("text", ""),
                 doc_id=entity.get("doc_id", ""),

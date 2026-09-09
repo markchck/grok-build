@@ -63,9 +63,12 @@ CHAT_MODEL=your-chat-model-name
 EMBEDDING_MODEL=your-embedding-model-name
 
 # Milvus (4단계부터)
-MILVUS_URI=http://localhost:19530
-MILVUS_TOKEN=
-MILVUS_COLLECTION=docagent_chunks
+# 주의: 변수 이름에 DOCAGENT_ 접두사를 붙인다. pymilvus가 MILVUS_URI를 자기 설정
+# 환경 변수로 예약하고 있고, 그 값이 http(s):// 형식이 아니면 `import pymilvus`
+# 자체가 ConnectionConfigException으로 실패한다(2.6.17, 3.0.1에서 확인).
+DOCAGENT_MILVUS_URI=http://localhost:19530
+DOCAGENT_MILVUS_TOKEN=
+DOCAGENT_MILVUS_COLLECTION=docagent_chunks
 
 # 애플리케이션
 APP_BASE_URL=http://localhost:8080
@@ -75,6 +78,10 @@ MAX_AGENT_SECONDS=120
 ```
 
 새 환경 변수가 필요한 장은 위 목록에 **추가만** 하고 기존 이름을 바꾸지 않는다.
+
+`OPENAI_BASE_URL`과 `OPENAI_API_KEY`는 openai SDK가 직접 읽는 이름이라 일부러 그대로 쓴다.
+반대로 Milvus 쪽은 라이브러리가 읽는 이름과 겹치면 안 되므로 `DOCAGENT_` 접두사를 붙인다.
+새 변수를 만들 때는 쓰려는 라이브러리가 그 이름을 이미 읽고 있는지 먼저 확인한다.
 
 ## 3. 샘플 데이터 (전 단계 공통)
 

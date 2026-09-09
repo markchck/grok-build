@@ -24,7 +24,7 @@ cp .env.example .env
 
 ## 3. Milvus 준비
 
-이 프로젝트의 기본값(`MILVUS_URI=http://localhost:19530`)은 **Docker standalone**을
+이 프로젝트의 기본값(`DOCAGENT_MILVUS_URI=http://localhost:19530`)은 **Docker standalone**을
 가리킨다. 공식 문서 기준 최소 설치는 아래 스크립트다([Run Milvus in Docker (Linux)](https://milvus.io/docs/install_standalone-docker.md)).
 
 ```bash
@@ -36,10 +36,10 @@ bash standalone_embed.sh start   # 19530 포트에 milvus-standalone 컨테이�
 
 서버를 띄우기 번거롭거나 빠르게 시험만 해보고 싶다면 **Milvus Lite**(같은 파이썬
 프로세스 안에서 파일 하나로 동작하는 내장 모드)를 쓸 수 있다. `.env`의
-`MILVUS_URI`를 로컬 파일 경로로 바꾸기만 하면 된다.
+`DOCAGENT_MILVUS_URI`를 로컬 파일 경로로 바꾸기만 하면 된다.
 
 ```
-MILVUS_URI=./data/milvus_demo.db
+DOCAGENT_MILVUS_URI=./data/milvus_demo.db
 ```
 
 코드는 두 경우 모두 동일하다 — `MilvusClient(uri=...)`에 준 값이 `http(s)://`면

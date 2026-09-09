@@ -171,9 +171,9 @@ OPENAI_API_KEY=sk-local-example-key
 CHAT_MODEL=your-chat-model-name
 EMBEDDING_MODEL=your-embedding-model-name
 
-MILVUS_URI=http://localhost:19530
-MILVUS_TOKEN=
-MILVUS_COLLECTION=docagent_chunks
+DOCAGENT_MILVUS_URI=http://localhost:19530
+DOCAGENT_MILVUS_TOKEN=
+DOCAGENT_MILVUS_COLLECTION=docagent_chunks
 
 APP_BASE_URL=http://localhost:8080
 REQUEST_TIMEOUT_SECONDS=60
@@ -537,7 +537,7 @@ overlap의 실제 효과다. (`chunk_size=800`에서는 모든 문서가 800자 
 
 ```bash
 docker run 없이 우선 Milvus Lite로 빠르게 확인하려면:
-# .env의 MILVUS_URI=./data/milvus_demo.db 로 설정한 뒤
+# .env의 DOCAGENT_MILVUS_URI=./data/milvus_demo.db 로 설정한 뒤
 uvicorn docagent.app:app --reload --port 8080
 ```
 
@@ -579,7 +579,7 @@ SSE 응답은 `status` → `sources` → `status` → `token`(여러 번) → `d
 `/api/ingest`를 호출하면, `client.insert()`가 벡터 길이와 스키마의 `dim`이
 다르다는 오류를 낸다. 원인은 컬렉션이 이미 이전 모델의 차원으로 고정돼 있기
 때문이다. 해결: 컬렉션을 새로 만들거나(`store.drop_collection` 뒤 재생성), 임베딩
-모델을 바꿀 때마다 컬렉션 이름도 함께 바꾼다(`MILVUS_COLLECTION`).
+모델을 바꿀 때마다 컬렉션 이름도 함께 바꾼다(`DOCAGENT_MILVUS_COLLECTION`).
 
 ### 6.2 문서 머리말 누락
 

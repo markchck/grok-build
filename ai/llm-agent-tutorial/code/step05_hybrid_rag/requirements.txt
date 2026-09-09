@@ -1,0 +1,24 @@
+# 이 단계에서 실제로 쓰는 패키지만 나열한다.
+#
+# pymilvus: BM25 Function(sparse 필드 자동 생성), AnnSearchRequest, RRFRanker,
+# WeightedRanker, MilvusClient.hybrid_search API를 쓴다. 이 API들은
+# milvus-io/pymilvus 저장소 예제(examples/full_text_search/bm25.py,
+# examples/orm_deprecated/hybrid_search/hello_hybrid_bm25.py)로 확인했다.
+# 2026-09 시점 PyPI 최신은 3.0.x다. 이 장의 코드는 3.0.x 소스로 시그니처를
+# 확인했지만 실제 Milvus 서버(2.4/2.5/3.0 등 버전별) 대상 실행 검증은
+# 하지 않았다 — 서버 버전에 따라 BM25 Function 지원 여부가 다를 수 있으므로
+# 먼저 자신의 Milvus 서버 버전에서 BM25 Function을 지원하는지 확인한다.
+pymilvus>=2.5,<4.0
+
+# OpenAI 호환 모델 서버 호출(채팅·임베딩 공용)
+openai>=1.40,<2.0
+
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.30,<1.0
+python-dotenv>=1.0,<2.0
+pydantic>=2.7,<3.0
+httpx>=0.27,<1.0
+
+# 단위 테스트 실행용. 표준 라이브러리 unittest만으로도 tests/를 돌릴 수
+# 있지만, pytest로 실행하면 출력이 더 읽기 편하다.
+pytest>=8.0,<9.0

@@ -59,8 +59,8 @@ def load_settings() -> Settings:
         "OPENAI_BASE_URL": os.environ.get("OPENAI_BASE_URL", ""),
         "CHAT_MODEL": os.environ.get("CHAT_MODEL", ""),
         "EMBEDDING_MODEL": os.environ.get("EMBEDDING_MODEL", ""),
-        "MILVUS_URI": os.environ.get("MILVUS_URI", ""),
-        "MILVUS_COLLECTION": os.environ.get("MILVUS_COLLECTION", ""),
+        "DOCAGENT_MILVUS_URI": os.environ.get("DOCAGENT_MILVUS_URI", ""),
+        "DOCAGENT_MILVUS_COLLECTION": os.environ.get("DOCAGENT_MILVUS_COLLECTION", ""),
     }
     missing = [k for k, v in required.items() if not v]
     if missing:
@@ -73,9 +73,9 @@ def load_settings() -> Settings:
         openai_api_key=os.environ.get("OPENAI_API_KEY", "sk-local-example-key"),
         chat_model=required["CHAT_MODEL"],
         embedding_model=required["EMBEDDING_MODEL"],
-        milvus_uri=required["MILVUS_URI"],
-        milvus_token=os.environ.get("MILVUS_TOKEN", ""),
-        milvus_collection=required["MILVUS_COLLECTION"],
+        milvus_uri=required["DOCAGENT_MILVUS_URI"],
+        milvus_token=os.environ.get("DOCAGENT_MILVUS_TOKEN", ""),
+        milvus_collection=required["DOCAGENT_MILVUS_COLLECTION"],
         app_base_url=os.environ.get("APP_BASE_URL", "http://localhost:8080"),
         request_timeout_seconds=_get_int("REQUEST_TIMEOUT_SECONDS", 60),
         chunk_size_chars=_get_int("CHUNK_SIZE_CHARS", 800),
